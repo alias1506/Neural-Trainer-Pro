@@ -1,0 +1,115 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* focus ring */
+.focus-ring:focus-visible {
+  outline: 3px solid #3f8cff;
+  outline-offset: 2px;
+}
+
+/* Light theme background */
+body {
+  background-color: #ffffff;
+  overflow: hidden;
+  margin: 0;
+  padding: 0;
+  height: 100vh;
+}
+
+#root {
+  height: 100vh;
+  overflow: hidden;
+}
+
+/* SweetAlert2 Custom Styling */
+.swal2-popup {
+  border-radius: 15px !important;
+  padding: 2rem !important;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3) !important;
+}
+
+.swal2-title {
+  font-size: 1.75rem !important;
+  font-weight: 700 !important;
+  color: #1f2937 !important;
+}
+
+.swal2-html-container {
+  font-size: 1rem !important;
+  color: #4b5563 !important;
+  line-height: 1.6 !important;
+}
+
+.swal2-confirm {
+  background: linear-gradient(135deg, #3b82f6, #6366f1) !important;
+  border-radius: 8px !important;
+  padding: 0.75rem 2rem !important;
+  font-weight: 600 !important;
+  box-shadow: 0 4px 12px rgba(59, 130, 246, 0.4) !important;
+}
+
+.swal2-confirm:hover {
+  transform: translateY(-2px) !important;
+  box-shadow: 0 6px 16px rgba(59, 130, 246, 0.5) !important;
+}
+
+.swal2-cancel {
+  background: linear-gradient(135deg, #ef4444, #dc2626) !important;
+  border-radius: 8px !important;
+  padding: 0.75rem 2rem !important;
+  font-weight: 600 !important;
+}
+
+.swal2-icon {
+  border-width: 3px !important;
+}
+
+.swal2-success {
+  border-color: #10b981 !important;
+}
+
+.swal2-error {
+  border-color: #ef4444 !important;
+}
+
+.swal2-info {
+  border-color: #3b82f6 !important;
+}
+
+/* Custom Scrollbar Styles */
+.custom-scrollbar::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+.custom-scrollbar::-webkit-scrollbar-track {
+  background: #f1f5f9;
+  border-radius: 10px;
+}
+
+.custom-scrollbar::-webkit-scrollbar-thumb {
+  background: linear-gradient(180deg, #3b82f6, #6366f1);
+  border-radius: 10px;
+  transition: all 0.3s ease;
+}
+
+.custom-scrollbar::-webkit-scrollbar-thumb:hover {
+  background: linear-gradient(180deg, #2563eb, #4f46e5);
+}
+
+/* Smooth Animations */
+@keyframes fade-in {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.animate-fade-in {
+  animation: fade-in 0.4s ease-out;
+}
