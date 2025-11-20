@@ -37,11 +37,9 @@ export default function App() {
     if (datasetInfo) {
       // Always overwrite with current dataset (no multiple datasets stored)
       localStorage.setItem('datasetInfo', JSON.stringify(datasetInfo))
-      console.log('💾 Dataset info saved to localStorage')
     } else {
       // Clear localStorage when no dataset
       localStorage.removeItem('datasetInfo')
-      console.log('🗑️ Dataset info cleared from localStorage')
     }
   }, [datasetInfo])
 
@@ -50,7 +48,7 @@ export default function App() {
     const websocket = new WebSocket(WS_URL)
     
     websocket.onopen = () => {
-      console.log('✓ WebSocket connected')
+      // WebSocket connected
     }
     
     websocket.onmessage = (event) => {
@@ -67,7 +65,7 @@ export default function App() {
     }
     
     websocket.onclose = () => {
-      console.log('WebSocket disconnected')
+      // WebSocket disconnected
     }
     
     return () => {
@@ -76,13 +74,14 @@ export default function App() {
   }, [])
 
   const handleTrainingUpdate = async (data) => {
-    console.clear() // Clear previous logs
-    
     if (data.type === 'status') {
+      console.clear()
       console.log('🚀 STATUS:', data.message)
       setProgress(prev => ({ ...prev, status: 'preparing', message: data.message }))
     } else if (data.type === 'info') {
-      console.log('ℹ️ INFO:', `Training on ${data.numImages} images, Classes: ${data.numClasses}`)
+      console.log('ℹ️ TRAINING INFO:')
+      console.log(`  📊 Total Images: ${data.numImages}`)
+      console.log(`  🏷️  Classes: ${data.numClasses}`)
       setDatasetInfo(prev => ({ ...prev, ...data }))
     } else if (data.type === 'device') {
       console.log('💻 DEVICE:', data.device)
@@ -94,8 +93,16 @@ export default function App() {
         showConfirmButton: false
       })
     } else if (data.type === 'epoch') {
-      console.log(`📊 EPOCH ${data.epoch}/${data.totalEpochs}:`, 
-        `Train Loss: ${data.trainLoss.toFixed(4)}, Train Acc: ${(data.trainAcc*100).toFixed(2)}%, Val Loss: ${data.valLoss.toFixed(4)}, Val Acc: ${(data.valAcc*100).toFixed(2)}%, Time: ${data.elapsed.toFixed(2)}s`)
+      console.clear()
+      console.log('═'.repeat(60))
+      console.log(`📊 EPOCH ${data.epoch}/${data.totalEpochs}`)
+      console.log('═'.repeat(60))
+      console.log(`🔴 Train Loss:      ${data.trainLoss.toFixed(4)}`)
+      console.log(`🟢 Train Accuracy:  ${(data.trainAcc * 100).toFixed(2)}%`)
+      console.log(`🔵 Val Loss:        ${data.valLoss.toFixed(4)}`)
+      console.log(`🟣 Val Accuracy:    ${(data.valAcc * 100).toFixed(2)}%`)
+      console.log(`⏱️  Time Elapsed:    ${data.elapsed.toFixed(2)}s`)
+      console.log('═'.repeat(60))
       
       setProgress(prev => ({
         ...prev,
@@ -125,17 +132,19 @@ export default function App() {
         return prev
       })
     } else if (data.type === 'complete') {
+      console.clear()
+      console.log('═'.repeat(60))
       console.log('✅ TRAINING COMPLETE!')
-      console.log(`Final Validation Accuracy: ${(data.finalValAcc*100).toFixed(2)}%`)
-      console.log(`Model saved: ${data.modelPath}`)
+      console.log('═'.repeat(60))
+      console.log(`🎯 Final Validation Accuracy: ${(data.finalValAcc * 100).toFixed(2)}%`)
+      console.log(`📁 Model saved at: ${data.modelPath}`)
+      console.log('═'.repeat(60))
       
       setProgress(prev => ({ ...prev, status: 'done', modelPath: data.modelPath }))
       
       // Clean up dataset after successful training
-      console.log('🧹 Cleaning up dataset after successful training...')
       try {
         await axios.post(`${API_URL}/clean-dataset`)
-        console.log('✓ Dataset cleaned from server')
       } catch (cleanError) {
         console.warn('Dataset cleanup warning:', cleanError)
       }
@@ -144,7 +153,6 @@ export default function App() {
       setDatasetInfo(null)
       setSelectedFiles([])
       localStorage.removeItem('datasetInfo')
-      console.log('✓ Dataset cleared from program and localStorage')
       
       // Update history entry to done
       setTrainingHistory(prev => {
@@ -177,7 +185,9 @@ export default function App() {
         setSection('dataset')
       })
     } else if (data.type === 'cancelled') {
+      console.clear()
       console.log('🛑 TRAINING CANCELLED')
+      
       setProgress(prev => ({ ...prev, status: 'cancelled' }))
       
       // Update history entry to cancelled
@@ -194,7 +204,13 @@ export default function App() {
         return prev
       })
     } else if (data.type === 'error') {
-      console.error('❌ ERROR:', data.message)
+      console.clear()
+      console.log('═'.repeat(60))
+      console.error('❌ TRAINING ERROR')
+      console.log('═'.repeat(60))
+      console.error(data.message)
+      console.log('═'.repeat(60))
+      
       setProgress(prev => ({ ...prev, status: 'error' }))
       
       // Update history entry to failed
@@ -356,9 +372,6 @@ export default function App() {
 
   const startTraining = async () => {
     try {
-      console.clear()
-      console.log('🎯 Starting new training session...')
-      
       setSection('progress')
       setProgress({ 
         status: 'preparing', 
@@ -397,7 +410,7 @@ export default function App() {
       })
       
       if (response.data.success) {
-        console.log('✓ Training request sent to server')
+        // Training started successfully
       }
     } catch (error) {
       console.error('Training error:', error)
@@ -425,8 +438,6 @@ export default function App() {
     })
 
     if (result.isConfirmed) {
-      console.log('🛑 Training cancelled by user')
-      
       try {
         // Call cancel endpoint
         const response = await axios.post(`${API_URL}/cancel-training`)
