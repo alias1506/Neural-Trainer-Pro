@@ -13,63 +13,135 @@ const WS_URL = 'ws://localhost:3002'
 
 export default function App() {
   const [collapsed, setCollapsed] = useState(false)
-  const [section, setSection] = useState('dataset')
+  const [section, setSection] = useState(() => {
+    return sessionStorage.getItem('currentSection') || 'dataset'
+  })
   const [uploadProgress, setUploadProgress] = useState(null)
   const [datasetInfo, setDatasetInfo] = useState(() => {
-    // Load from localStorage on mount
-    const saved = localStorage.getItem('datasetInfo')
+    // Load from sessionStorage on mount
+    const saved = sessionStorage.getItem('datasetInfo')
     return saved ? JSON.parse(saved) : null
   })
   const [config, setConfig] = useState({ epochs: 10, batchSize: 32, learningRate: 0.001, optimizer: 'adam' })
-  const [progress, setProgress] = useState({ status: 'idle', epoch: 0, trainLoss: 0, trainAcc: 0, valLoss: 0, valAcc: 0, timeMs: 0, lossHistory: [], accHistory: [], modelPath: '' })
+  const [progress, setProgress] = useState({ status: 'idle', epoch: 0, trainLoss: 0, trainAcc: 0, valLoss: 0, valAcc: 0, timeMs: 0, lossHistory: [], accHistory: [], valLossHistory: [], valAccHistory: [], modelPath: '' })
   const [trainingHistory, setTrainingHistory] = useState(() => {
-    const saved = localStorage.getItem('trainingHistory')
-    return saved ? JSON.parse(saved) : []
+    const saved = sessionStorage.getItem('trainingHistory')
+    if (saved) {
+      const history = JSON.parse(saved)
+      // Clean up any stale "running" entries on load (from previous session)
+      return history.map(h => {
+        if (h.status === 'running') {
+          return { ...h, status: 'cancelled', endTime: h.endTime || new Date().toISOString() }
+        }
+        return h
+      })
+    }
+    return []
   })
 
-  // Save training history to localStorage
+  // Save section state to sessionStorage
   useEffect(() => {
-    localStorage.setItem('trainingHistory', JSON.stringify(trainingHistory))
+    sessionStorage.setItem('currentSection', section)
+    
+    // When navigating to export section, verify models exist
+    // If no models, clear any orphaned dataset info
+    if (section === 'export') {
+      axios.get(`${API_URL}/list-models`)
+        .then(response => {
+          if (!response.data.models || response.data.models.length === 0) {
+            // No models exist, clear dataset info
+            setDatasetInfo(null)
+            sessionStorage.removeItem('datasetInfo')
+          }
+        })
+        .catch(() => {
+          // Silently handle error
+        })
+    }
+  }, [section])
+
+  // Save training history to sessionStorage
+  useEffect(() => {
+    sessionStorage.setItem('trainingHistory', JSON.stringify(trainingHistory))
   }, [trainingHistory])
 
-  // Save datasetInfo to localStorage whenever it changes (only 1 dataset at a time)
+  // Save datasetInfo to sessionStorage whenever it changes (only 1 dataset at a time)
   useEffect(() => {
     if (datasetInfo) {
       // Always overwrite with current dataset (no multiple datasets stored)
-      localStorage.setItem('datasetInfo', JSON.stringify(datasetInfo))
+      sessionStorage.setItem('datasetInfo', JSON.stringify(datasetInfo))
     } else {
-      // Clear localStorage when no dataset
-      localStorage.removeItem('datasetInfo')
+      // Clear sessionStorage when no dataset
+      sessionStorage.removeItem('datasetInfo')
     }
   }, [datasetInfo])
 
-  // Setup WebSocket
+  // Clean up uploads folder on mount if sessionStorage is empty (browser was closed)
   useEffect(() => {
-    const websocket = new WebSocket(WS_URL)
-    
-    websocket.onopen = () => {
-      // WebSocket connected
+    const hasSession = sessionStorage.getItem('datasetInfo')
+    if (!hasSession) {
+      // Browser was closed, clean up server uploads
+      axios.post(`${API_URL}/cleanup-uploads`).catch(err => {
+        // Silently ignore cleanup errors
+      })
     }
-    
-    websocket.onmessage = (event) => {
+  }, [])
+
+  // Setup WebSocket with retry logic
+  useEffect(() => {
+    let websocket = null
+    let reconnectTimeout = null
+    let isComponentMounted = true
+
+    const connectWebSocket = () => {
       try {
-        const data = JSON.parse(event.data)
-        handleTrainingUpdate(data)
-      } catch (e) {
-        console.error('WebSocket parse error:', e)
+        websocket = new WebSocket(WS_URL)
+        
+        // Set connection timeout
+        const connectionTimeout = setTimeout(() => {
+          if (websocket && websocket.readyState === WebSocket.CONNECTING) {
+            websocket.close()
+          }
+        }, 5000)
+        
+        websocket.onopen = () => {
+          clearTimeout(connectionTimeout)
+        }
+        
+        websocket.onmessage = (event) => {
+          try {
+            const data = JSON.parse(event.data)
+            handleTrainingUpdate(data)
+          } catch (e) {
+            // Ignore parse errors
+          }
+        }
+        
+        websocket.onerror = (error) => {
+          clearTimeout(connectionTimeout)
+        }
+        
+        websocket.onclose = () => {
+          clearTimeout(connectionTimeout)
+          // Only retry if component is still mounted and not manually closed
+          if (isComponentMounted) {
+            reconnectTimeout = setTimeout(connectWebSocket, 3000)
+          }
+        }
+      } catch (error) {
+        // Retry connection
+        if (isComponentMounted) {
+          reconnectTimeout = setTimeout(connectWebSocket, 3000)
+        }
       }
     }
-    
-    websocket.onerror = (error) => {
-      console.error('WebSocket error:', error)
-    }
-    
-    websocket.onclose = () => {
-      // WebSocket disconnected
-    }
+
+    connectWebSocket()
     
     return () => {
-      websocket.close()
+      isComponentMounted = false
+      if (reconnectTimeout) clearTimeout(reconnectTimeout)
+      if (websocket) websocket.close()
     }
   }, [])
 
@@ -92,17 +164,34 @@ export default function App() {
         timer: 2000,
         showConfirmButton: false
       })
+    } else if (data.type === 'batch') {
+      // Real-time batch-level updates (every 10 batches)
+      setProgress(prev => {
+        return {
+          ...prev,
+          status: 'training',
+          epoch: data.epoch,
+          totalEpochs: data.totalEpochs,
+          trainLoss: data.trainLoss,
+          trainAcc: data.trainAcc,
+          timeMs: data.elapsed * 1000
+          // Don't update history arrays during batch updates - wait for epoch completion
+        }
+      })
     } else if (data.type === 'epoch') {
-      console.clear()
-      console.log('═'.repeat(60))
-      console.log(`📊 EPOCH ${data.epoch}/${data.totalEpochs}`)
-      console.log('═'.repeat(60))
-      console.log(`🔴 Train Loss:      ${data.trainLoss.toFixed(4)}`)
-      console.log(`🟢 Train Accuracy:  ${(data.trainAcc * 100).toFixed(2)}%`)
-      console.log(`🔵 Val Loss:        ${data.valLoss.toFixed(4)}`)
-      console.log(`🟣 Val Accuracy:    ${(data.valAcc * 100).toFixed(2)}%`)
-      console.log(`⏱️  Time Elapsed:    ${data.elapsed.toFixed(2)}s`)
-      console.log('═'.repeat(60))
+      // Only show console output after first epoch completes
+      if (data.epoch >= 1) {
+        console.clear()
+        console.log('═'.repeat(60))
+        console.log(`📊 EPOCH ${data.epoch}/${data.totalEpochs}`)
+        console.log('═'.repeat(60))
+        console.log(`🔴 Train Loss:      ${data.trainLoss.toFixed(4)}`)
+        console.log(`🟢 Train Accuracy:  ${(data.trainAcc * 100).toFixed(2)}%`)
+        console.log(`🔵 Val Loss:        ${data.valLoss.toFixed(4)}`)
+        console.log(`🟣 Val Accuracy:    ${(data.valAcc * 100).toFixed(2)}%`)
+        console.log(`⏱️  Time Elapsed:    ${data.elapsed.toFixed(2)}s`)
+        console.log('═'.repeat(60))
+      }
       
       setProgress(prev => ({
         ...prev,
@@ -114,8 +203,10 @@ export default function App() {
         valLoss: data.valLoss,
         valAcc: data.valAcc,
         timeMs: data.elapsed * 1000,
-        lossHistory: [...prev.lossHistory, data.trainLoss],
-        accHistory: [...prev.accHistory, data.trainAcc]
+        lossHistory: [...(prev.lossHistory || []), data.trainLoss],
+        accHistory: [...(prev.accHistory || []), data.trainAcc],
+        valLossHistory: [...(prev.valLossHistory || []), data.valLoss],
+        valAccHistory: [...(prev.valAccHistory || []), data.valAcc]
       }))
       
       // Update running history entry
@@ -140,29 +231,56 @@ export default function App() {
       console.log(`📁 Model saved at: ${data.modelPath}`)
       console.log('═'.repeat(60))
       
-      setProgress(prev => ({ ...prev, status: 'done', modelPath: data.modelPath }))
+      // Store relative path for download (remove absolute base path)
+      const relativePath = data.modelPath.replace(/^.*[\\\/]uploads[\\\/]/, 'uploads/')
+      setProgress(prev => ({ ...prev, status: 'done', modelPath: relativePath }))
+      
+      // Store numClasses and classes in datasetInfo for export
+      if (data.numClasses || data.classes) {
+        setDatasetInfo(prev => ({
+          ...prev,
+          numClasses: data.numClasses,
+          classes: data.classes
+        }))
+      }
       
       // Clean up dataset after successful training
       try {
         await axios.post(`${API_URL}/clean-dataset`)
       } catch (cleanError) {
-        console.warn('Dataset cleanup warning:', cleanError)
+        // Silently handle cleanup errors
       }
       
-      // Clear dataset from program state and localStorage
+      // Clear dataset info from state and session storage after training
       setDatasetInfo(null)
-      setSelectedFiles([])
-      localStorage.removeItem('datasetInfo')
+      sessionStorage.removeItem('datasetInfo')
       
       // Update history entry to done
       setTrainingHistory(prev => {
         if (prev.length > 0 && prev[0].status === 'running') {
           const updated = [...prev]
+          // Store relative path for matching with export
+          const relativePath = data.modelPath.replace(/^.*[\\\\/]/, '')
+          // Get final loss from the last epoch's data
+          const finalLoss = progress.lossHistory && progress.lossHistory.length > 0 
+            ? progress.lossHistory[progress.lossHistory.length - 1]
+            : progress.trainLoss || 0
           updated[0] = {
             ...updated[0],
             status: 'done',
-            metrics: { acc: data.finalValAcc, loss: progress.trainLoss },
-            modelPath: data.modelPath,
+            metrics: { 
+              acc: data.finalValAcc, 
+              loss: finalLoss, 
+              trainAcc: data.finalTrainAcc,
+              valAcc: data.finalValAcc,
+              trainLoss: finalLoss
+            },
+            // Store all history arrays for export metadata
+            lossHistory: progress.lossHistory || [],
+            accHistory: progress.accHistory || [],
+            valLossHistory: progress.valLossHistory || [],
+            valAccHistory: progress.valAccHistory || [],
+            modelPath: relativePath,
             endTime: new Date().toISOString()
           }
           return updated
@@ -174,21 +292,39 @@ export default function App() {
         icon: 'success',
         title: 'Training Complete!',
         html: `
-          <div class="text-left">
-            <p class="mb-2"><strong>Validation Accuracy:</strong> ${(data.finalValAcc * 100).toFixed(2)}%</p>
-            <p class="mb-2"><strong>Model saved at:</strong></p>
-            <p class="text-sm text-gray-600 bg-gray-100 p-2 rounded">${data.modelPath}</p>
+          <div class="text-center">
+            <p class="mb-2 text-lg"><strong>Validation Accuracy:</strong> ${(data.finalValAcc * 100).toFixed(2)}%</p>
+            <p class="text-green-600 font-semibold mt-3">✅ Model Trained Successfully!</p>
+            <p class="text-sm text-gray-600 mt-2">Redirecting to export page...</p>
           </div>
         `,
-        confirmButtonColor: '#3b82f6'
+        confirmButtonColor: '#10b981',
+        timer: 2000,
+        showConfirmButton: false
       }).then(() => {
-        setSection('dataset')
+        // Redirect to export page after notification
+        setSection('export')
       })
     } else if (data.type === 'cancelled') {
       console.clear()
       console.log('🛑 TRAINING CANCELLED')
       
-      setProgress(prev => ({ ...prev, status: 'cancelled' }))
+      // Reset progress to default state
+      setProgress({ 
+        status: 'idle', 
+        epoch: 0, 
+        totalEpochs: 0,
+        trainLoss: 0, 
+        trainAcc: 0, 
+        valLoss: 0, 
+        valAcc: 0, 
+        timeMs: 0, 
+        lossHistory: [], 
+        accHistory: [], 
+        valLossHistory: [], 
+        valAccHistory: [], 
+        modelPath: '' 
+      })
       
       // Update history entry to cancelled
       setTrainingHistory(prev => {
@@ -202,6 +338,15 @@ export default function App() {
           return updated
         }
         return prev
+      })
+      
+      Swal.fire({
+        icon: 'info',
+        title: 'Training Cancelled',
+        text: 'Training has been stopped.',
+        confirmButtonColor: '#3b82f6',
+        timer: 2000,
+        showConfirmButton: false
       })
     } else if (data.type === 'error') {
       console.clear()
@@ -277,7 +422,7 @@ export default function App() {
           showConfirmButton: false
         })
       } catch (error) {
-        console.error('Cleanup error:', error)
+        // Silently handle cleanup errors
       }
       // Refresh the page to reset everything
       window.location.reload()
@@ -293,7 +438,6 @@ export default function App() {
       try {
         await axios.post(`${API_URL}/clean-uploads`)
       } catch (cleanError) {
-        console.warn('Server cleanup warning:', cleanError)
         // Continue with upload even if cleanup fails
       }
       
@@ -360,7 +504,6 @@ export default function App() {
         // Dataset uploaded successfully - info is shown in the UI, no popup needed
       }
     } catch (error) {
-      console.error('Upload error:', error)
       Swal.fire({
         icon: 'error',
         title: 'Upload Failed',
@@ -376,6 +519,7 @@ export default function App() {
       setProgress({ 
         status: 'preparing', 
         epoch: 0, 
+        totalEpochs: config.epochs || 10,
         trainLoss: 0, 
         trainAcc: 0, 
         valLoss: 0, 
@@ -383,6 +527,8 @@ export default function App() {
         timeMs: 0,
         lossHistory: [],
         accHistory: [],
+        valLossHistory: [],
+        valAccHistory: [],
         message: 'Starting training...'
       })
       
@@ -413,7 +559,6 @@ export default function App() {
         // Training started successfully
       }
     } catch (error) {
-      console.error('Training error:', error)
       setProgress(prev => ({ ...prev, status: 'error' }))
       Swal.fire({
         icon: 'error',
@@ -457,7 +602,22 @@ export default function App() {
             return prev
           })
           
-          setProgress(prev => ({ ...prev, status: 'cancelled' }))
+          // Reset progress to default state
+          setProgress({ 
+            status: 'idle', 
+            epoch: 0, 
+            totalEpochs: 0,
+            trainLoss: 0, 
+            trainAcc: 0, 
+            valLoss: 0, 
+            valAcc: 0, 
+            timeMs: 0, 
+            lossHistory: [], 
+            accHistory: [], 
+            valLossHistory: [], 
+            valAccHistory: [], 
+            modelPath: '' 
+          })
           
           Swal.fire({
             icon: 'info',
@@ -468,7 +628,6 @@ export default function App() {
           })
         }
       } catch (error) {
-        console.error('Cancel error:', error)
         Swal.fire({
           icon: 'error',
           title: 'Cancel Failed',
@@ -530,6 +689,62 @@ export default function App() {
                 <ModelExport 
                   progress={progress}
                   datasetInfo={datasetInfo}
+                  onModelExported={(modelPath, format) => {
+                    // Update history to mark as exported
+                    setTrainingHistory(prev => prev.map(h => {
+                      if (h.modelPath === modelPath) {
+                        return { ...h, exportedFormat: format }
+                      }
+                      return h
+                    }))
+                    
+                    // Reset progress to initial state after export
+                    setProgress({ 
+                      status: 'idle', 
+                      epoch: 0, 
+                      totalEpochs: 0,
+                      trainLoss: 0, 
+                      trainAcc: 0, 
+                      valLoss: 0, 
+                      valAcc: 0, 
+                      timeMs: 0, 
+                      lossHistory: [], 
+                      accHistory: [], 
+                      valLossHistory: [], 
+                      valAccHistory: [], 
+                      modelPath: '' 
+                    })
+                  }}
+                  onAllModelsCleared={() => {
+                    // Reset all state to default when no models exist
+                    setDatasetInfo(null)
+                    sessionStorage.removeItem('datasetInfo')
+                    
+                    // Reset progress to initial state
+                    setProgress({ 
+                      status: 'idle', 
+                      epoch: 0, 
+                      totalEpochs: 0,
+                      trainLoss: 0, 
+                      trainAcc: 0, 
+                      valLoss: 0, 
+                      valAcc: 0, 
+                      timeMs: 0, 
+                      lossHistory: [], 
+                      accHistory: [], 
+                      valLossHistory: [], 
+                      valAccHistory: [], 
+                      modelPath: '' 
+                    })
+                    
+                    Swal.fire({
+                      icon: 'info',
+                      title: 'All Models Cleared',
+                      text: 'All training data has been reset to default.',
+                      timer: 2000,
+                      showConfirmButton: false
+                    })
+                  }}
                 />
               )}
               

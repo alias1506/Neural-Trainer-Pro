@@ -69,7 +69,7 @@ async function buildFolderTree(dirPath, maxDepth = 10, currentDepth = 0) {
           });
         }
       } catch (entryError) {
-        console.error(`Error processing entry ${entry.name}:`, entryError.message);
+        // Ignore entry errors
       }
     }
     
@@ -77,7 +77,7 @@ async function buildFolderTree(dirPath, maxDepth = 10, currentDepth = 0) {
     
     return children;
   } catch (error) {
-    console.error(`Error reading directory ${dirPath}:`, error.message);
+    // Ignore directory errors
     return [];
   }
 }
@@ -121,7 +121,7 @@ async function getClassNames(datasetPath) {
       return classFolders;
     }
   } catch (e) {
-    console.error('Error reading class folders:', e);
+    // Ignore class folder errors
   }
   
   return [];
@@ -137,6 +137,7 @@ async function detectDatasetStructure(datasetPath) {
   
   // Build folder tree
   const treeChildren = await buildFolderTree(datasetPath, 10, 0);
+  
   const tree = {
     name: path.basename(datasetPath),
     path: datasetPath,
@@ -144,29 +145,91 @@ async function detectDatasetStructure(datasetPath) {
     children: treeChildren
   };
   
+  // Helper function to check if a folder contains class subfolders with images
+  async function hasClassSubfolders(folderPath) {
+    try {
+      const subEntries = await fs.readdir(folderPath, { withFileTypes: true });
+      const subFolders = subEntries.filter(e => e.isDirectory());
+      
+      if (subFolders.length === 0) return false;
+      
+      // Check if at least one subfolder contains images
+      for (const subFolder of subFolders) {
+        const subFolderPath = path.join(folderPath, subFolder.name);
+        const subFiles = await fs.readdir(subFolderPath, { withFileTypes: true });
+        const hasImages = subFiles.some(f => f.isFile() && /\.(jpg|jpeg|png|gif|bmp|webp)$/i.test(f.name));
+        if (hasImages) return true;
+      }
+      return false;
+    } catch (e) {
+      return false;
+    }
+  }
+  
   // Check for common structures
   const hasTrainTest = folders.includes('train') && folders.includes('test');
-  const hasClassFolders = folders.length > 0 && folders.every(f => !['train', 'test', 'val'].includes(f));
+  const hasTrainFolder = folders.includes('train');
+  const hasTestFolder = folders.includes('test');
+  const hasValFolder = folders.includes('val') || folders.includes('valid');
+  const hasClassFolders = folders.length > 0 && folders.every(f => !['train', 'test', 'val', 'valid'].includes(f.toLowerCase()));
   const hasBinFiles = files.some(f => f.endsWith('.bin'));
   const hasImageFiles = files.some(f => /\.(jpg|jpeg|png|gif|bmp|webp)$/i.test(f));
   const hasCsvFiles = files.some(f => f.endsWith('.csv'));
+  
+
   
   // CIFAR-10/100 specific files
   const hasCifarBatch = files.some(f => /data_batch_\d+/.test(f) || f === 'test_batch' || f === 'batches.meta');
   const hasCifarMeta = files.some(f => f === 'batches.meta.txt' || f === 'batches.meta');
   const hasCifarHtml = files.some(f => f === 'batches.meta.html');
   
-  // YOLO format detection (more specific - needs both images and corresponding txt labels)
-  const hasYoloConfig = files.some(f => f === 'data.yaml' || f === 'dataset.yaml');
-  const hasYoloLabels = files.some(f => {
-    // YOLO labels are .txt files that correspond to image files
-    if (!f.endsWith('.txt')) return false;
-    const baseName = f.replace('.txt', '');
-    return files.some(imgFile => {
-      const imgBase = imgFile.replace(/\.(jpg|jpeg|png|gif|bmp|webp)$/i, '');
-      return imgBase === baseName;
-    });
-  });
+  // YOLO format detection (check for yaml config or labels structure)
+  const hasYoloConfig = files.some(f => f === 'data.yaml' || f === 'dataset.yaml' || f.endsWith('.yaml'));
+  const hasClassesTxt = files.some(f => f === 'classes.txt' || f === 'obj.names' || f === 'class.txt');
+  const hasLabelsFolder = folders.includes('labels') || folders.includes('annotations');
+  const hasImagesFolder = folders.includes('images');
+  const lowerFolders = folders.map(f => f.toLowerCase());
+  const hasTrainValidFolders = lowerFolders.includes('train') && 
+                                (lowerFolders.includes('valid') || lowerFolders.includes('val'));
+  
+  // Check for YOLO structure: train/val folders with images and corresponding txt labels
+  async function hasYoloStructure() {
+    // Check if train/val/test folders contain images with corresponding .txt files
+    const dataFolders = folders.filter(f => ['train', 'val', 'valid', 'test', 'images'].includes(f.toLowerCase()));
+    
+    if (dataFolders.length === 0) return false;
+    
+    for (const folder of dataFolders) {
+      const folderPath = path.join(datasetPath, folder);
+      try {
+        const folderFiles = await fs.readdir(folderPath, { withFileTypes: true });
+        const folderFileNames = folderFiles.filter(f => f.isFile()).map(f => f.name);
+        
+        // Check if there are corresponding txt labels for images
+        const hasImageFile = folderFileNames.some(f => /\.(jpg|jpeg|png|gif|bmp|webp)$/i.test(f));
+        const hasTxtFile = folderFileNames.some(f => f.endsWith('.txt') && f !== 'classes.txt');
+        
+        if (hasImageFile && hasTxtFile) {
+          // Verify at least one image has a corresponding label
+          for (const file of folderFileNames) {
+            if (/\.(jpg|jpeg|png|gif|bmp|webp)$/i.test(file)) {
+              const baseName = file.replace(/\.(jpg|jpeg|png|gif|bmp|webp)$/i, '');
+              if (folderFileNames.includes(baseName + '.txt')) {
+                return true;
+              }
+            }
+          }
+        }
+      } catch (e) {
+        // Ignore errors
+      }
+    }
+    return false;
+  }
+  
+  const hasYoloLabels = await hasYoloStructure();
+  
+
   
   // Dataset structure detected
   
@@ -181,8 +244,10 @@ async function detectDatasetStructure(datasetPath) {
       tree
     };
   }
-  // YOLO format detection
-  else if ((hasYoloLabels && hasImageFiles) || hasYoloConfig) {
+  // YOLO format detection (check BEFORE train-test-split since YOLO often has train folder)
+  if (hasYoloConfig || hasYoloLabels || (hasLabelsFolder && hasImagesFolder) || 
+      (hasTrainValidFolders && hasClassesTxt) || (hasTrainValidFolders && hasYoloLabels)) {
+
     return { 
       type: 'yolo', 
       structure: 'YOLO format (images + txt labels)',
@@ -204,26 +269,61 @@ async function detectDatasetStructure(datasetPath) {
     };
   } 
   // Train/Test split structure
-  else if (hasTrainTest) {
-    return { 
-      type: 'train-test-split', 
-      structure: 'Organized train/test folders with class subfolders',
-      supportedTasks: ['image-classification'],
-      classes,
-      numClasses: classes.length,
-      tree
-    };
+  if (hasTrainTest) {
+    const trainHasClasses = await hasClassSubfolders(path.join(datasetPath, 'train'));
+    if (trainHasClasses) {
+      return { 
+        type: 'train-test-split', 
+        structure: 'Organized train/test folders with class subfolders',
+        supportedTasks: ['image-classification'],
+        classes,
+        numClasses: classes.length,
+        tree
+      };
+    }
   } 
+  // Only train folder (will use as class folders or split)
+  else if (hasTrainFolder) {
+    const trainHasClasses = await hasClassSubfolders(path.join(datasetPath, 'train'));
+    if (trainHasClasses) {
+      return { 
+        type: 'train-test-split', 
+        structure: 'Train folder with class subfolders (will auto-split validation)',
+        supportedTasks: ['image-classification'],
+        classes,
+        numClasses: classes.length,
+        tree
+      };
+    }
+  }
   // Simple class folders
-  else if (hasClassFolders) {
-    return { 
-      type: 'class-folders', 
-      structure: 'Class folders (will auto-split 80/20 train/test)',
-      supportedTasks: ['image-classification'],
-      classes,
-      numClasses: classes.length,
-      tree
-    };
+  if (hasClassFolders && folders.length > 0) {
+    // Verify that folders actually contain images
+    let hasValidClassFolders = false;
+    for (const folder of folders) {
+      const folderPath = path.join(datasetPath, folder);
+      try {
+        const folderEntries = await fs.readdir(folderPath, { withFileTypes: true });
+        const folderHasImages = folderEntries.some(f => f.isFile() && /\.(jpg|jpeg|png|gif|bmp|webp)$/i.test(f.name));
+        if (folderHasImages) {
+          hasValidClassFolders = true;
+          break;
+        }
+      } catch (e) {
+        // Ignore read errors
+      }
+    }
+    
+    if (hasValidClassFolders) {
+      return { 
+        type: 'class-folders', 
+        structure: 'Class folders (will auto-split 80/20 train/test)',
+        supportedTasks: ['image-classification'],
+        classes,
+        numClasses: classes.length,
+        tree
+      };
+    }
   } 
   // Flat image directory
   else if (hasImageFiles) {
@@ -268,7 +368,7 @@ app.post('/api/upload-dataset', async (req, res, next) => {
   // Use custom middleware to extract pathMapping BEFORE multer processes files
   uploadMixed(req, res, async (err) => {
     if (err) {
-      console.error('Multer error:', err);
+      // Multer error handled
       return res.status(500).json({ error: err.message });
     }
     
@@ -282,7 +382,7 @@ app.post('/api/upload-dataset', async (req, res, next) => {
         // Delete the pathMapping file as we don't need it anymore
         await fs.unlink(pathMappingFile.path);
       } catch (e) {
-        console.error('Failed to parse pathMapping file:', e.message);
+        // Failed to parse pathMapping
       }
     }
     
@@ -308,7 +408,8 @@ app.post('/api/upload-dataset', async (req, res, next) => {
     try {
       const entries = await fs.readdir(uploadsDir, { withFileTypes: true });
       for (const entry of entries) {
-        if (entry.name === 'temp') continue; // Skip temp folder
+        // Skip temp folder only
+        if (entry.name === 'temp') continue;
         
         const fullPath = path.join(uploadsDir, entry.name);
         try {
@@ -334,11 +435,25 @@ app.post('/api/upload-dataset', async (req, res, next) => {
     // Move and reorganize each file
     let movedCount = 0;
     for (const file of req.files) {
-      const fileKey = file.originalname;
-      const fullPath = req.pathMapping[fileKey];
+      let fileKey = file.originalname;
+      let fullPath = req.pathMapping[fileKey];
+      
+      // If exact match not found, try to find by decoding or matching the actual filename part
+      if (!fullPath) {
+        // Try to find by matching the filename portion after the index
+        const filenamePart = fileKey.replace(/^file_\d+_/, '');
+        const matchingKey = Object.keys(req.pathMapping).find(key => {
+          const keyFilename = key.replace(/^file_\d+_/, '');
+          return keyFilename === filenamePart || decodeURIComponent(keyFilename) === filenamePart;
+        });
+        
+        if (matchingKey) {
+          fullPath = req.pathMapping[matchingKey];
+        }
+      }
       
       if (!fullPath) {
-        console.warn(`Warning: No path mapping for ${fileKey}`);
+        // Silently skip files without path mapping (likely encoding issues with special characters)
         continue;
       }
       
@@ -378,7 +493,7 @@ app.post('/api/upload-dataset', async (req, res, next) => {
       structure
     });
   } catch (error) {
-    console.error('Upload error:', error);
+    // Upload error
     
     // Handle multer-specific errors
     if (error.code === 'LIMIT_FILE_COUNT') {
@@ -404,15 +519,7 @@ app.post('/api/upload-dataset', async (req, res, next) => {
 // Error handling middleware for multer
 app.use((error, req, res, next) => {
   if (error instanceof multer.MulterError) {
-    console.error('\n===== MULTER ERROR =====');
-    console.error('Error code:', error.code);
-    console.error('Error message:', error.message);
-    console.error('Error field:', error.field);
-    console.error('Files processed before error:', req.files ? req.files.length : 0);
-    if (req.files && req.files.length > 0) {
-      console.error('Last successful file:', req.files[req.files.length - 1].originalname);
-    }
-    console.error('========================\n');
+    // Multer error details omitted
     
     return res.status(400).json({ 
       error: `Upload error: ${error.message}`,
@@ -430,7 +537,7 @@ app.post('/api/train', async (req, res) => {
     
     // Kill any existing training process
     if (currentTrainingProcess) {
-      console.log('Killing existing training process...');
+      // Killing existing training process
       currentTrainingProcess.kill('SIGTERM');
       currentTrainingProcess = null;
     }
@@ -452,7 +559,7 @@ app.post('/api/train', async (req, res) => {
     python.stdout.on('data', (data) => {
       const message = data.toString();
       output += message;
-      console.log('Python:', message);
+      // Python message received
       
       // Parse progress and send via WebSocket
       if (wsClient && wsClient.readyState === WebSocket.OPEN) {
@@ -465,29 +572,29 @@ app.post('/api/train', async (req, res) => {
             }
           });
         } catch (e) {
-          console.error('Parse error:', e);
+          // Parse error
         }
       }
     });
     
     python.stderr.on('data', (data) => {
-      console.error('Python error:', data.toString());
+      // Python error
     });
     
     python.on('close', (code) => {
       if (code === 0) {
-        console.log('Training completed successfully');
+        // Training completed
       } else if (code === null) {
-        console.log('Training was cancelled');
+        // Training cancelled
       } else {
-        console.error('Training failed with code:', code);
+        // Training failed
       }
       currentTrainingProcess = null;
     });
     
     res.json({ success: true, message: 'Training started' });
   } catch (error) {
-    console.error('Training error:', error);
+    // Training error
     res.status(500).json({ error: error.message });
   }
 });
@@ -496,8 +603,18 @@ app.post('/api/train', async (req, res) => {
 app.post('/api/cancel-training', async (req, res) => {
   try {
     if (currentTrainingProcess) {
-      console.log('Cancelling training process...');
-      currentTrainingProcess.kill('SIGTERM');
+      // Cancelling training
+      
+      // On Windows, use taskkill for forceful termination to avoid multiprocessing cleanup errors
+      if (process.platform === 'win32') {
+        const { exec } = require('child_process');
+        exec(`taskkill /pid ${currentTrainingProcess.pid} /T /F`, (error) => {
+          // Taskkill completed
+        });
+      } else {
+        currentTrainingProcess.kill('SIGKILL');
+      }
+      
       currentTrainingProcess = null;
       
       // Send cancellation message via WebSocket
@@ -513,7 +630,39 @@ app.post('/api/cancel-training', async (req, res) => {
       res.json({ success: false, message: 'No training in progress' });
     }
   } catch (error) {
-    console.error('Cancel error:', error);
+    // Cancel error
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Clean up uploads folder
+app.post('/api/cleanup-uploads', async (req, res) => {
+  try {
+    const uploadsDir = path.join(__dirname, 'uploads');
+    const entries = await fs.readdir(uploadsDir, { withFileTypes: true });
+    
+    let deletedCount = 0;
+    for (const entry of entries) {
+      // Skip temp folder
+      if (entry.name === 'temp') continue;
+      
+      const fullPath = path.join(uploadsDir, entry.name);
+      try {
+        if (entry.isDirectory()) {
+          await fs.rm(fullPath, { recursive: true, force: true });
+          deletedCount++;
+        } else if (entry.isFile() && entry.name.endsWith('.pth')) {
+          await fs.unlink(fullPath);
+          deletedCount++;
+        }
+      } catch (delErr) {
+        // Failed to delete
+      }
+    }
+    
+    res.json({ success: true, message: `Cleaned up ${deletedCount} items` });
+  } catch (error) {
+    // Cleanup error
     res.status(500).json({ error: error.message });
   }
 });
@@ -560,7 +709,7 @@ app.post('/api/clean-uploads', async (req, res) => {
     
     res.json({ success: true, deletedCount });
   } catch (error) {
-    console.error('Clean error:', error);
+    // Clean error
     res.status(500).json({ error: error.message });
   }
 });
@@ -576,14 +725,17 @@ app.post('/api/clean-dataset', async (req, res) => {
     for (const entry of entries) {
       const fullPath = path.join(uploadsDir, entry.name);
       
-      // Skip temp directory and model files
+      // Skip temp directory
       if (entry.name === 'temp') continue;
-      if (entry.isFile()) continue; // Keep all files (models)
       
       try {
+        // Delete all dataset directories and loose .pth files (not in Model folder)
         if (entry.isDirectory()) {
-          // Delete dataset directories only
           await fs.rm(fullPath, { recursive: true, force: true });
+          deletedCount++;
+        } else if (entry.isFile() && entry.name.endsWith('.pth')) {
+          // Delete loose .pth files in root uploads (not in Model folder)
+          await fs.unlink(fullPath);
           deletedCount++;
         }
       } catch (error) {
@@ -593,7 +745,65 @@ app.post('/api/clean-dataset', async (req, res) => {
     
     res.json({ success: true, deletedCount });
   } catch (error) {
-    console.error('Clean dataset error:', error);
+    // Clean dataset error
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Get list of all trained models
+app.get('/api/list-models', async (req, res) => {
+  try {
+    const modelsDir = path.join(__dirname, 'trainedModel');
+    
+    // Check if trainedModel directory exists
+    try {
+      await fs.access(modelsDir);
+    } catch (error) {
+      return res.json({ models: [] });
+    }
+
+    // Read all files in trainedModel directory
+    const files = await fs.readdir(modelsDir);
+    
+    // Filter for .pth files and get their stats
+    const models = [];
+    for (const file of files) {
+      if (file.endsWith('.pth')) {
+        const filePath = path.join(modelsDir, file);
+        const stats = await fs.stat(filePath);
+        models.push({
+          name: file,
+          path: `trainedModel/${file}`,
+          size: stats.size,
+          createdAt: stats.birthtime,
+          modifiedAt: stats.mtime
+        });
+      }
+    }
+
+    // Sort by creation date (newest first)
+    models.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+
+    // Auto-cleanup: If no models exist, remove all dataset folders
+    if (models.length === 0) {
+      try {
+        const uploadsDir = path.join(__dirname, 'uploads');
+        const entries = await fs.readdir(uploadsDir, { withFileTypes: true });
+        for (const entry of entries) {
+          if (entry.isDirectory() && entry.name !== 'temp') {
+            const fullPath = path.join(uploadsDir, entry.name);
+            await fs.rm(fullPath, { recursive: true, force: true });
+            console.log(`Auto-cleaned orphaned dataset: ${entry.name}`);
+          }
+        }
+      } catch (cleanError) {
+        console.warn('Auto-cleanup warning:', cleanError);
+      }
+    }
+
+    res.json({ models });
+  } catch (error) {
+    // List models error
     res.status(500).json({ error: error.message });
   }
 });
@@ -607,14 +817,19 @@ app.get('/api/download-model', async (req, res) => {
       return res.status(400).json({ error: 'Model path is required' });
     }
 
+    // Convert relative path to absolute path
+    const absolutePath = path.isAbsolute(modelPath) 
+      ? modelPath 
+      : path.join(__dirname, modelPath);
+
     // Check if file exists
     try {
-      await fs.access(modelPath);
+      await fs.access(absolutePath);
     } catch (error) {
-      return res.status(404).json({ error: 'Model file not found' });
+      return res.status(404).json({ error: 'Model file not found', path: absolutePath });
     }
 
-    let fileToDownload = modelPath;
+    let fileToDownload = absolutePath;
     let filename = path.basename(modelPath);
 
     // Convert model if format is not pytorch
@@ -626,7 +841,7 @@ app.get('/api/download-model', async (req, res) => {
         
         const conversionProcess = spawn(pythonExe, [
           convertScript,
-          modelPath,
+          absolutePath,
           format,
           numClasses.toString()
         ]);
@@ -667,7 +882,7 @@ app.get('/api/download-model', async (req, res) => {
           });
         });
       } catch (conversionError) {
-        console.error('Conversion error details:', conversionError);
+        // Conversion error
         return res.status(500).json({ 
           error: 'Model conversion failed', 
           details: conversionError.message,
@@ -692,7 +907,7 @@ app.get('/api/download-model', async (req, res) => {
     fileStream.pipe(res);
     
     fileStream.on('error', (error) => {
-      console.error('File stream error:', error);
+      // File stream error
       if (!res.headersSent) {
         res.status(500).json({ error: 'Error streaming file' });
       }
@@ -701,25 +916,22 @@ app.get('/api/download-model', async (req, res) => {
     // Clean up files after download
     fileStream.on('end', async () => {
       try {
-        // Delete converted file if it's not the original
-        if (fileToDownload !== modelPath) {
+        // Delete converted file if it exists
+        if (fileToDownload !== absolutePath) {
           await fs.unlink(fileToDownload);
-          console.log(`Deleted converted file: ${fileToDownload}`);
+          // Deleted converted file
         }
         
-        // Delete original trained model file after conversion
-        // (except for pytorch format which IS the original)
-        if (format !== 'pytorch' && format !== 'pth') {
-          await fs.unlink(modelPath);
-          console.log(`Deleted original model file after conversion: ${modelPath}`);
-        }
+        // Delete the original .pth model file after export
+        await fs.unlink(absolutePath);
+        // Model deleted after export
       } catch (e) {
-        console.error('Cleanup error:', e);
+        // Cleanup error
       }
     });
 
   } catch (error) {
-    console.error('Download error:', error);
+    // Download error
     res.status(500).json({ error: error.message });
   }
 });

@@ -10,25 +10,29 @@ from pathlib import Path
 import traceback
 
 class SimpleCNN(nn.Module):
-    """Simple CNN model for image classification"""
+    """Simple CNN model for image classification - MUST MATCH train.py"""
     def __init__(self, num_classes=10):
         super(SimpleCNN, self).__init__()
         self.features = nn.Sequential(
-            nn.Conv2d(3, 32, kernel_size=3, padding=1),
+            nn.Conv2d(3, 32, 3, padding=1),
             nn.ReLU(),
-            nn.MaxPool2d(2, 2),
-            nn.Conv2d(32, 64, kernel_size=3, padding=1),
+            nn.MaxPool2d(2),
+            
+            nn.Conv2d(32, 64, 3, padding=1),
             nn.ReLU(),
-            nn.MaxPool2d(2, 2),
-            nn.Conv2d(64, 64, kernel_size=3, padding=1),
+            nn.MaxPool2d(2),
+            
+            nn.Conv2d(64, 128, 3, padding=1),
             nn.ReLU(),
+            nn.MaxPool2d(2),
         )
+        
         self.classifier = nn.Sequential(
             nn.Flatten(),
-            nn.Linear(64 * 8 * 8, 512),
+            nn.Linear(128 * 4 * 4, 128),
             nn.ReLU(),
             nn.Dropout(0.5),
-            nn.Linear(512, num_classes)
+            nn.Linear(128, num_classes)
         )
     
     def forward(self, x):
@@ -38,8 +42,20 @@ class SimpleCNN(nn.Module):
 
 def convert_to_onnx(model_path, output_path, num_classes=10):
     """Convert PyTorch model to ONNX format"""
+    # Load checkpoint
+    checkpoint = torch.load(model_path, map_location='cpu')
+    
+    # Handle both old format (state_dict) and new format (with metadata)
+    if isinstance(checkpoint, dict) and 'model_state_dict' in checkpoint:
+        state_dict = checkpoint['model_state_dict']
+        # Use num_classes from checkpoint if available
+        if 'num_classes' in checkpoint:
+            num_classes = checkpoint['num_classes']
+    else:
+        state_dict = checkpoint
+    
     model = SimpleCNN(num_classes)
-    model.load_state_dict(torch.load(model_path, map_location='cpu'))
+    model.load_state_dict(state_dict)
     model.eval()
     
     # Create dummy input
@@ -64,8 +80,19 @@ def convert_to_onnx(model_path, output_path, num_classes=10):
 
 def convert_to_torchscript(model_path, output_path, num_classes=10):
     """Convert PyTorch model to TorchScript format"""
+    # Load checkpoint
+    checkpoint = torch.load(model_path, map_location='cpu')
+    
+    # Handle both old format (state_dict) and new format (with metadata)
+    if isinstance(checkpoint, dict) and 'model_state_dict' in checkpoint:
+        state_dict = checkpoint['model_state_dict']
+        if 'num_classes' in checkpoint:
+            num_classes = checkpoint['num_classes']
+    else:
+        state_dict = checkpoint
+    
     model = SimpleCNN(num_classes)
-    model.load_state_dict(torch.load(model_path, map_location='cpu'))
+    model.load_state_dict(state_dict)
     model.eval()
     
     # Create dummy input
@@ -85,8 +112,19 @@ def convert_to_coreml(model_path, output_path, num_classes=10):
     except ImportError:
         raise ImportError("coremltools is required for CoreML export. Install with: pip install coremltools")
     
+    # Load checkpoint
+    checkpoint = torch.load(model_path, map_location='cpu')
+    
+    # Handle both old format (state_dict) and new format (with metadata)
+    if isinstance(checkpoint, dict) and 'model_state_dict' in checkpoint:
+        state_dict = checkpoint['model_state_dict']
+        if 'num_classes' in checkpoint:
+            num_classes = checkpoint['num_classes']
+    else:
+        state_dict = checkpoint
+    
     model = SimpleCNN(num_classes)
-    model.load_state_dict(torch.load(model_path, map_location='cpu'))
+    model.load_state_dict(state_dict)
     model.eval()
     
     # Create dummy input

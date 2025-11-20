@@ -25,10 +25,16 @@ const InfoButton = ({ info }) => {
 export default function TrainingConfig({ config, onChange, onStart, datasetReady }) {
   const set = (k, v) => onChange({ ...config, [k]: v })
   
+  // Ensure config has valid defaults to prevent NaN
+  const epochs = config.epochs || 10
+  const batchSize = config.batchSize || 32
+  const learningRate = config.learningRate || 0.001
+  const optimizer = config.optimizer || 'adam'
+  
   // Calculate stats
-  const estimatedTime = Math.ceil((config.epochs * config.batchSize * 0.5) / 60)
-  const iterations = Math.ceil(1000 / config.batchSize) * config.epochs // Assuming 1000 samples
-  const memoryUsage = config.batchSize * 0.5 // Rough MB estimate
+  const estimatedTime = Math.ceil((epochs * batchSize * 0.5) / 60)
+  const iterations = Math.ceil(1000 / batchSize) * epochs // Assuming 1000 samples
+  const memoryUsage = batchSize * 0.5 // Rough MB estimate
   
   return (
     <div className="bg-gray-100">
@@ -39,7 +45,7 @@ export default function TrainingConfig({ config, onChange, onStart, datasetReady
           <div className="flex items-center justify-between">
             <div>
               <div className="text-xs uppercase font-semibold opacity-80">Total Epochs</div>
-              <div className="text-2xl font-bold mt-1">{config.epochs}</div>
+              <div className="text-2xl font-bold mt-1">{epochs}</div>
             </div>
             <div className="text-3xl opacity-30">🔄</div>
           </div>
@@ -50,7 +56,7 @@ export default function TrainingConfig({ config, onChange, onStart, datasetReady
           <div className="flex items-center justify-between">
             <div>
               <div className="text-xs uppercase font-semibold opacity-80">Batch Size</div>
-              <div className="text-2xl font-bold mt-1">{config.batchSize}</div>
+              <div className="text-2xl font-bold mt-1">{batchSize}</div>
             </div>
             <div className="text-3xl opacity-30">📦</div>
           </div>
@@ -61,7 +67,7 @@ export default function TrainingConfig({ config, onChange, onStart, datasetReady
           <div className="flex items-center justify-between">
             <div>
               <div className="text-xs uppercase font-semibold opacity-80">Learning Rate</div>
-              <div className="text-2xl font-bold mt-1">{config.learningRate}</div>
+              <div className="text-2xl font-bold mt-1">{learningRate}</div>
             </div>
             <div className="text-3xl opacity-30">⚡</div>
           </div>
@@ -100,28 +106,28 @@ export default function TrainingConfig({ config, onChange, onStart, datasetReady
                         <span className="font-semibold text-gray-700">Epochs</span>
                         <InfoButton info="Number of complete passes through the entire training dataset. More epochs can improve accuracy but may cause overfitting." />
                       </div>
-                      <input type="number" min="1" defaultValue={config.epochs} onChange={(e)=>set('epochs', parseInt(e.target.value))} className="w-full border-2 border-gray-300 rounded-lg p-3 focus:border-blue-500 focus:ring-2 focus:ring-blue-200 bg-white text-gray-800 font-medium transition-all" />
+                      <input type="number" min="1" defaultValue={epochs} onChange={(e)=>set('epochs', parseInt(e.target.value) || 10)} className="w-full border-2 border-gray-300 rounded-lg p-3 focus:border-blue-500 focus:ring-2 focus:ring-blue-200 bg-white text-gray-800 font-medium transition-all" />
                     </label>
                     <label className="block">
                       <div className="flex items-center mb-2">
                         <span className="font-semibold text-gray-700">Batch Size</span>
                         <InfoButton info="Number of training examples used in one iteration. Larger batches train faster but use more memory. Common values: 16, 32, 64, 128." />
                       </div>
-                      <input type="number" min="1" defaultValue={config.batchSize} onChange={(e)=>set('batchSize', parseInt(e.target.value))} className="w-full border-2 border-gray-300 rounded-lg p-3 focus:border-blue-500 focus:ring-2 focus:ring-blue-200 bg-white text-gray-800 font-medium transition-all" />
+                      <input type="number" min="1" defaultValue={batchSize} onChange={(e)=>set('batchSize', parseInt(e.target.value) || 32)} className="w-full border-2 border-gray-300 rounded-lg p-3 focus:border-blue-500 focus:ring-2 focus:ring-blue-200 bg-white text-gray-800 font-medium transition-all" />
                     </label>
                     <label className="block">
                       <div className="flex items-center mb-2">
                         <span className="font-semibold text-gray-700">Learning Rate</span>
                         <InfoButton info="Controls how much to adjust weights during training. Smaller values (0.001-0.0001) are safer but slower. Larger values train faster but may miss optimal solutions." />
                       </div>
-                      <input type="number" step="0.0001" defaultValue={config.learningRate} onChange={(e)=>set('learningRate', parseFloat(e.target.value))} className="w-full border-2 border-gray-300 rounded-lg p-3 focus:border-blue-500 focus:ring-2 focus:ring-blue-200 bg-white text-gray-800 font-medium transition-all" />
+                      <input type="number" step="0.0001" defaultValue={learningRate} onChange={(e)=>set('learningRate', parseFloat(e.target.value) || 0.001)} className="w-full border-2 border-gray-300 rounded-lg p-3 focus:border-blue-500 focus:ring-2 focus:ring-blue-200 bg-white text-gray-800 font-medium transition-all" />
                     </label>
                     <label className="block">
                       <div className="flex items-center mb-2">
                         <span className="font-semibold text-gray-700">Optimizer</span>
                         <InfoButton info="Algorithm used to update model weights. Adam: adaptive, works well generally. SGD: simple, requires tuning. RMSprop: good for recurrent networks." />
                       </div>
-                      <select defaultValue={config.optimizer} onChange={(e)=>set('optimizer', e.target.value)} className="w-full border-2 border-gray-300 rounded-lg p-3 focus:border-blue-500 focus:ring-2 focus:ring-blue-200 bg-white text-gray-800 font-medium transition-all">
+                      <select defaultValue={optimizer} onChange={(e)=>set('optimizer', e.target.value)} className="w-full border-2 border-gray-300 rounded-lg p-3 focus:border-blue-500 focus:ring-2 focus:ring-blue-200 bg-white text-gray-800 font-medium transition-all">
                         <option>adam</option>
                         <option>sgd</option>
                         <option>rmsprop</option>

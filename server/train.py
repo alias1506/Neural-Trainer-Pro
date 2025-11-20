@@ -8,6 +8,7 @@ from torch.utils.data import DataLoader, Dataset
 from torchvision import datasets, transforms
 from pathlib import Path
 import time
+from datetime import datetime
 
 class YOLODataset(Dataset):
     """Dataset loader for YOLO format (images + labels folders)"""
@@ -93,7 +94,11 @@ class YOLODataset(Dataset):
     def __getitem__(self, idx):
         from PIL import Image
         img_path = self.images[idx]
-        image = Image.open(img_path).convert('RGB')
+        image = Image.open(img_path)
+        # Handle palette images with transparency
+        if image.mode == 'P' and 'transparency' in image.info:
+            image = image.convert('RGBA')
+        image = image.convert('RGB')
         label = self.labels[idx]
         
         if self.transform:
@@ -338,7 +343,11 @@ class FlatImageDataset(Dataset):
     def __getitem__(self, idx):
         from PIL import Image
         img_path = self.images[idx]
-        image = Image.open(img_path).convert('RGB')
+        image = Image.open(img_path)
+        # Handle palette images with transparency
+        if image.mode == 'P' and 'transparency' in image.info:
+            image = image.convert('RGBA')
+        image = image.convert('RGB')
         label = self.labels[idx]
         
         if self.transform:
@@ -381,7 +390,11 @@ class CustomImageDataset(Dataset):
     def __getitem__(self, idx):
         from PIL import Image
         img_path = self.images[idx]
-        image = Image.open(img_path).convert('RGB')
+        image = Image.open(img_path)
+        # Handle palette images with transparency
+        if image.mode == 'P' and 'transparency' in image.info:
+            image = image.convert('RGBA')
+        image = image.convert('RGB')
         label = self.labels[idx]
         
         if self.transform:
@@ -430,11 +443,9 @@ def train_model(dataset_path, config):
     learning_rate = config.get('learningRate', 0.001)
     dataset_type = config.get('datasetType', 'auto')  # Get dataset type from config
     
-    send_progress({'type': 'status', 'message': f'Loading {dataset_type} dataset...'})
-    
-    # Data transforms
+    # Data transforms (optimized for speed)
     transform = transforms.Compose([
-        transforms.Resize((32, 32)),
+        transforms.Resize((32, 32), antialias=True),  # Faster with antialias
         transforms.ToTensor(),
         transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
     ])
@@ -444,119 +455,52 @@ def train_model(dataset_path, config):
     num_classes = 0
     dataset_root = Path(dataset_path)
     
-    # Load based on dataset type from config
+    # Load based on dataset type from config (optimized for speed)
+    send_progress({'type': 'status', 'message': f'Initializing {dataset_type} dataset...'})
+    
     if dataset_type == 'yolo':
-        send_progress({'type': 'status', 'message': 'Loading YOLO format dataset...'})
         dataset = YOLODataset(dataset_path, transform=transform)
         num_classes = len(dataset.class_names)
-        send_progress({
-            'type': 'info',
-            'classes': dataset.class_names,
-            'numClasses': num_classes,
-            'numImages': len(dataset)
-        })
+        classes = dataset.class_names
     
     elif dataset_type in ['cifar-binary', 'cifar-10', 'cifar-100']:
-        # For CIFAR dataset
-        send_progress({'type': 'status', 'message': 'Loading CIFAR dataset...'})
-        
-        # Check if it's binary format (has batch files)
-        has_binary_files = any(dataset_root.glob('*batch*')) or any(dataset_root.glob('*.bin'))
-        
-        if has_binary_files:
-            # Use binary loader for CIFAR .bin files
+        # Check if binary format
+        if any(dataset_root.glob('*batch*')) or any(dataset_root.glob('*.bin')):
             is_cifar100 = 'cifar-100' in dataset_type.lower()
             dataset = CIFARBinaryDataset(dataset_path, transform=transform, is_cifar100=is_cifar100)
             num_classes = len(dataset.class_names)
-            send_progress({
-                'type': 'info',
-                'classes': dataset.class_names,
-                'numClasses': num_classes,
-                'numImages': len(dataset)
-            })
+            classes = dataset.class_names
         else:
-            # Check for extracted image format
-            has_txt_file = any(dataset_root.glob('*.txt'))
-            
-            if has_txt_file:
-                # Use FlatImageDataset for datasets with classes.txt and images
-                dataset = FlatImageDataset(dataset_path, transform=transform)
-                num_classes = len(dataset.class_names)
-                send_progress({
-                    'type': 'info',
-                    'classes': dataset.class_names,
-                    'numClasses': num_classes,
-                    'numImages': len(dataset)
-                })
-            else:
-                # Try standard ImageFolder structure
-                try:
-                    if (dataset_root / 'train').exists():
-                        dataset = datasets.ImageFolder(dataset_root / 'train', transform=transform)
-                    else:
-                        dataset = datasets.ImageFolder(dataset_root, transform=transform)
-                    
-                    num_classes = len(dataset.classes)
-                    send_progress({
-                        'type': 'info',
-                        'classes': dataset.classes,
-                        'numClasses': num_classes,
-                        'numImages': len(dataset)
-                    })
-                except Exception as e:
-                    send_progress({'type': 'error', 'message': f'Failed to load CIFAR: {str(e)}'})
-                    sys.exit(1)
+            # Standard ImageFolder
+            folder_path = dataset_root / 'train' if (dataset_root / 'train').exists() else dataset_root
+            dataset = datasets.ImageFolder(folder_path, transform=transform)
+            num_classes = len(dataset.classes)
+            classes = dataset.classes
     
     elif dataset_type in ['train-test-split', 'class-folders']:
         # Standard ImageFolder structure
-        send_progress({'type': 'status', 'message': 'Loading class-based dataset...'})
-        try:
-            if (dataset_root / 'train').exists():
-                dataset = datasets.ImageFolder(dataset_root / 'train', transform=transform)
-            else:
-                dataset = datasets.ImageFolder(dataset_root, transform=transform)
-            
-            num_classes = len(dataset.classes)
-            send_progress({
-                'type': 'info',
-                'classes': dataset.classes,
-                'numClasses': num_classes,
-                'numImages': len(dataset)
-            })
-        except Exception as e:
-            send_progress({'type': 'error', 'message': f'Failed to load dataset: {str(e)}'})
-            sys.exit(1)
+        folder_path = dataset_root / 'train' if (dataset_root / 'train').exists() else dataset_root
+        dataset = datasets.ImageFolder(folder_path, transform=transform)
+        num_classes = len(dataset.classes)
+        classes = dataset.classes
     
     else:
-        # Auto-detect format
-        send_progress({'type': 'status', 'message': 'Auto-detecting dataset format...'})
-        
-        # Check for YOLO structure
-        has_yolo = any((dataset_root / split / 'images').exists() 
-                      for split in ['train', 'valid', 'test', ''])
-        
-        if has_yolo:
-            dataset = YOLODataset(dataset_path, transform=transform)
-            num_classes = len(dataset.class_names)
+        # Auto-detect (fallback only)
+        if (dataset_root / 'train').exists():
+            dataset = datasets.ImageFolder(dataset_root / 'train', transform=transform)
+            num_classes = len(dataset.classes)
+            classes = dataset.classes
         else:
-            # Try ImageFolder
-            try:
-                if (dataset_root / 'train').exists():
-                    dataset = datasets.ImageFolder(dataset_root / 'train', transform=transform)
-                else:
-                    dataset = datasets.ImageFolder(dataset_root, transform=transform)
-                num_classes = len(dataset.classes)
-            except:
-                # Fallback to custom loader
-                dataset = CustomImageDataset(dataset_path, transform=transform)
-                num_classes = len(dataset.class_names)
-        
-        send_progress({
-            'type': 'info',
-            'classes': dataset.classes if hasattr(dataset, 'classes') else dataset.class_names,
-            'numClasses': num_classes,
-            'numImages': len(dataset)
-        })
+            dataset = datasets.ImageFolder(dataset_root, transform=transform)
+            num_classes = len(dataset.classes)
+            classes = dataset.classes
+    
+    send_progress({
+        'type': 'info',
+        'classes': classes,
+        'numClasses': num_classes,
+        'numImages': len(dataset)
+    })
     
     if len(dataset) == 0:
         send_progress({'type': 'error', 'message': 'No images found in dataset!'})
@@ -572,7 +516,7 @@ def train_model(dataset_path, config):
     dataloader_kwargs = {
         'batch_size': batch_size,
         'pin_memory': use_cuda,  # Faster data transfer to GPU
-        'num_workers': 2 if use_cuda else 0  # Parallel data loading for GPU
+        'num_workers': 0  # Set to 0 to avoid multiprocessing pickle errors on Windows during cancellation
     }
     
     train_loader = DataLoader(train_dataset, shuffle=True, **dataloader_kwargs)
@@ -603,6 +547,7 @@ def train_model(dataset_path, config):
         running_loss = 0.0
         correct = 0
         total = 0
+        num_batches = len(train_loader)
         
         for batch_idx, (inputs, labels) in enumerate(train_loader):
             # Non-blocking transfer for GPU (faster data loading)
@@ -619,6 +564,26 @@ def train_model(dataset_path, config):
             _, predicted = outputs.max(1)
             total += labels.size(0)
             correct += predicted.eq(labels).sum().item()
+            
+            # Send real-time updates every 10 batches or at the last batch
+            if (batch_idx + 1) % 10 == 0 or (batch_idx + 1) == num_batches:
+                current_train_loss = running_loss / (batch_idx + 1)
+                current_train_acc = correct / total
+                elapsed = time.time() - start_time
+                
+                # Send batch progress (not final epoch update)
+                send_progress({
+                    'type': 'batch',
+                    'epoch': epoch + 1,
+                    'totalEpochs': epochs,
+                    'batch': batch_idx + 1,
+                    'totalBatches': num_batches,
+                    'trainLoss': current_train_loss,
+                    'trainAcc': current_train_acc,
+                    'valLoss': 0,  # Will be updated after validation
+                    'valAcc': 0,
+                    'elapsed': elapsed
+                })
         
         train_loss = running_loss / len(train_loader)
         train_acc = correct / total
@@ -658,9 +623,21 @@ def train_model(dataset_path, config):
             'elapsed': elapsed
         })
     
-    # Save model
-    model_path = os.path.join(os.path.dirname(dataset_path), 'trained_model.pth')
-    torch.save(model.state_dict(), model_path)
+    # Save model with datetime in filename in trainedModel folder
+    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+    model_filename = f'TrainedModel_{timestamp}.pth'
+    # Ensure model is saved in trainedModel folder (outside uploads)
+    models_dir = os.path.join(os.path.dirname(__file__), 'trainedModel')
+    os.makedirs(models_dir, exist_ok=True)
+    model_path = os.path.join(models_dir, model_filename)
+    
+    # Save model with metadata including num_classes for conversion
+    torch.save({
+        'model_state_dict': model.state_dict(),
+        'num_classes': num_classes,
+        'classes': classes,
+        'timestamp': timestamp
+    }, model_path)
     
     # Clear GPU memory if using CUDA
     if torch.cuda.is_available():
@@ -670,7 +647,9 @@ def train_model(dataset_path, config):
         'type': 'complete',
         'modelPath': model_path,
         'finalTrainAcc': train_acc,
-        'finalValAcc': val_acc
+        'finalValAcc': val_acc,
+        'numClasses': num_classes,
+        'classes': classes
     })
 
 if __name__ == '__main__':
