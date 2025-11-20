@@ -15,9 +15,17 @@
 
 ---
 
-## Overview
+## 🚀 Overview
 
 Neural Trainer Pro is a production-ready machine learning training platform that seamlessly integrates PyTorch's computational power with a modern React interface. Deploy custom image classification models with enterprise-level visualization, automated workflows, and multi-format export capabilities.
+
+### ✨ What Makes It Special
+
+- **Zero Configuration** - Upload datasets and start training immediately
+- **Real-Time Insights** - Watch your model learn with live metrics and interactive charts
+- **Universal Export** - Deploy to any platform with 5+ export formats
+- **Professional UI** - Clean, intuitive interface built with modern design principles
+- **GPU Accelerated** - Automatic hardware detection for maximum performance
 
 ## Key Features
 
@@ -47,52 +55,67 @@ Export trained models to multiple industry-standard formats:
 
 | Layer | Technologies |
 |-------|-------------|
-| **Frontend** | React, Vite, Material-UI, Chart.js, Tailwind CSS |
+| **Frontend** | React 18, Vite, Chart.js, Tailwind CSS, SweetAlert2 |
 | **Backend** | Node.js, Express, WebSocket |
-| **ML Engine** | PyTorch, ONNX, CoreML, TensorFlow |
+| **ML Engine** | PyTorch, ONNX, CoreML, TensorFlow Lite |
 | **Infrastructure** | GPU/CUDA Support, Virtual Environments |
 
-## Getting Started
+## 🎯 Quick Start
 
 ### Prerequisites
-- Node.js 16 or higher
-- Python 3.11 or higher
-- CUDA-capable GPU (optional, recommended for performance)
+- **Node.js** 16+ ([Download](https://nodejs.org/))
+- **Python** 3.11+ ([Download](https://www.python.org/))
+- **CUDA GPU** (optional, for faster training)
 
 ### Installation
 
 ```bash
-# Clone repository
+# 1. Clone repository
 git clone https://github.com/alias1506/Neural-Trainer-Pro.git
 cd Neural-Trainer-Pro
 
-# Install dependencies
+# 2. Install Node.js dependencies
 npm install
 
-# Setup Python environment
+# 3. Setup Python virtual environment
 python -m venv .venv
-source .venv/bin/activate  # Linux/Mac
-# .venv\Scripts\activate    # Windows
 
-# Install ML dependencies
+# Activate environment (choose your OS):
+# Windows (PowerShell):
+.venv\Scripts\Activate.ps1
+# Windows (Command Prompt):
+.venv\Scripts\activate.bat
+# Linux/Mac:
+source .venv/bin/activate
+
+# 4. Install PyTorch with CUDA support (for GPU acceleration)
 pip install torch torchvision --index-url https://download.pytorch.org/whl/cu118
+
+# 5. Install model export dependencies (optional)
 pip install onnx coremltools tensorflow onnx-tf
 
-# Launch application
+# 6. Launch the application
 npm run dev
 ```
 
-> **Windows Users**: If script execution is restricted, use `cmd /c "npm run dev"`
+> **Troubleshooting**: If PowerShell blocks script execution, use: `cmd /c "npm run dev"`
 
-The application will automatically launch in your default browser.
+The application will open automatically at `http://localhost:5173` 🚀
 
-## Usage Workflow
+## 🎮 Usage Workflow
 
-1. **Dataset Upload** - Import your organized image dataset via drag-and-drop interface
-2. **Configure Parameters** - Customize training hyperparameters to suit your needs
-3. **Monitor Training** - Track real-time metrics with interactive visualizations
-4. **Export Models** - Download trained models in your preferred deployment format
-5. **Review History** - Analyze past training sessions and performance metrics
+1. **📤 Dataset Upload** - Drag and drop your image dataset (automatically detects structure)
+2. **⚙️ Configure Training** - Set epochs, batch size, and learning rate
+3. **📊 Monitor Progress** - Watch real-time metrics with interactive charts
+4. **💾 Auto-Save Models** - Models saved to `server/trainedModel/` after each training
+5. **📥 Export Models** - Download in PyTorch, ONNX, TorchScript, CoreML, or TFLite
+6. **📜 Review History** - Analyze all past training sessions with pagination
+
+### Model Storage
+- All trained models are automatically saved to `server/trainedModel/`
+- Each model has a unique timestamp (e.g., `TrainedModel_20251120_113045.pth`)
+- Models persist across sessions until explicitly exported and deleted
+- Multiple models can be trained and stored simultaneously
 
 ### Advanced Monitoring
 Access detailed training insights through browser developer tools for:
@@ -101,19 +124,35 @@ Access detailed training insights through browser developer tools for:
 - Dataset composition and validation results
 - Training completion summaries and diagnostics
 
-## Architecture
+## 📁 Project Structure
 
 ```
 Neural-Trainer-Pro/
-├── src/                 # Frontend application
-│   ├── components/      # React UI components
-│   ├── ml/             # Model definitions
-│   └── utils/          # Utility functions
-├── server/             # Backend services
-│   ├── server.js       # API & WebSocket server
-│   ├── train.py        # Training pipeline
-│   └── convert_model.py # Format conversion
-└── ...                 # Configuration files
+├── src/                          # Frontend React application
+│   ├── components/
+│   │   ├── DatasetSelector.jsx  # Dataset upload interface
+│   │   ├── TrainingConfig.jsx   # Hyperparameter controls
+│   │   ├── TrainingProgress.jsx # Real-time monitoring
+│   │   ├── TrainingHistory.jsx  # Session management
+│   │   ├── ModelExport.jsx      # Export interface
+│   │   └── Sidebar.jsx          # Navigation
+│   ├── ml/
+│   │   ├── model.js             # Neural network architecture
+│   │   └── training.js          # Training orchestration
+│   ├── utils/
+│   │   ├── charts.js            # Chart configurations
+│   │   ├── cifar.js             # CIFAR-10 handling
+│   │   ├── onnx-export.js       # Model conversion
+│   │   └── storage.js           # Data persistence
+│   └── App.jsx                  # Main application
+├── server/                       # Backend Node.js services
+│   ├── server.js                # Express API & WebSocket
+│   ├── train.py                 # PyTorch training pipeline
+│   ├── convert_model.py         # Multi-format export
+│   ├── uploads/                 # Dataset storage
+│   └── trainedModel/            # Model repository
+├── coverage/                     # Test coverage reports
+└── Configuration files (Vite, Tailwind, etc.)
 ```
 
 ## Supported Dataset Formats
@@ -248,9 +287,10 @@ We welcome contributions from the community. Please follow these guidelines:
 
 Built with industry-leading technologies:
 - **PyTorch** - Deep learning framework
-- **Chart.js** - Data visualization
-- **Material-UI** - Component library
+- **Chart.js** - Real-time data visualization
 - **React** - Frontend framework
+- **Tailwind CSS** - Utility-first CSS framework
+- **SweetAlert2** - Beautiful alert dialogs
 
 Special thanks to the open-source community for continuous innovation.
 
