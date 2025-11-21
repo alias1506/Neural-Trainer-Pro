@@ -51,7 +51,13 @@ export default function DatasetSelector({ onFilesSelected, datasetInfo, onFormat
         const files = []
         const rootName = dir.name
         
-        alert(`Starting to collect files from: ${rootName}`)
+        Swal.fire({
+          icon: 'info',
+          title: 'Collecting Files',
+          text: `Starting to collect files from: ${rootName}`,
+          timer: 2000,
+          showConfirmButton: false
+        })
         
         async function collect(handle, currentPath = '') {
           if (handle.kind === 'file') {

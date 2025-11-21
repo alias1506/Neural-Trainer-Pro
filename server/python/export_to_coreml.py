@@ -65,47 +65,50 @@ def load_model(path, num_classes=10):
 
 
 if __name__ == '__main__':
-    if len(sys.argv) < 3:
-        print("Usage: python export_to_coreml.py <model.pth> <output.mlmodel> [num_classes]")
-        sys.exit(1)
+    import json
+    import traceback
     
-    model, nc = load_model(sys.argv[1], int(sys.argv[3]) if len(sys.argv) > 3 else 10)
-    output = sys.argv[2]
-    onnx_path = output.replace('.mlmodel', '.onnx')
-    
-    # Step 1: Create ONNX
-    torch.onnx.export(
-        model, torch.randn(1, 3, 32, 32), onnx_path,
-        export_params=True, opset_version=13,
-        input_names=['input'], output_names=['output'],
-        dynamic_axes={'input': {0: 'batch'}, 'output': {0: 'batch'}}
-    )
-    print(f"[OK] ONNX created: {onnx_path}")
-    
-    # Step 2: Try CoreML conversion
     try:
-        import coremltools as ct
-        import onnx
+        if len(sys.argv) < 3:
+            print(json.dumps({'success': False, 'error': 'Usage: python export_to_coreml.py <model.pth> <output.mlmodel> [num_classes]'}))
+            sys.exit(1)
         
-        onnx_model = onnx.load(onnx_path)
-        mlmodel = ct.convert(onnx_model, source='onnx', minimum_deployment_target=ct.target.iOS15)
-        mlmodel.save(output)
-        print(f"[OK] CoreML created: {output} ({nc} classes)")
+        model, nc = load_model(sys.argv[1], int(sys.argv[3]) if len(sys.argv) > 3 else 10)
+        output = sys.argv[2]
+        onnx_path = output.replace('.mlmodel', '.onnx')
         
-    except ImportError:
-        print("[WARN] coremltools not available on Windows")
-        readme = output.replace('.mlmodel', '_Instructions.txt')
-        with open(readme, 'w') as f:
-            f.write("CoreML Conversion Instructions\n")
-            f.write("="*50 + "\n\n")
-            f.write(f"ONNX file created: {os.path.basename(onnx_path)}\n\n")
-            f.write("To convert on macOS:\n")
-            f.write("1. pip install coremltools\n")
-            f.write("2. Run:\n")
-            f.write("   import coremltools as ct\n")
-            f.write(f"   ct.convert('{os.path.basename(onnx_path)}', source='onnx').save('{os.path.basename(output)}')\n\n")
-            f.write("Or use ONNX Runtime Mobile (iOS/Android support)\n")
-        print(f"[OK] Instructions: {readme}")
-    
+        # Step 1: Create ONNX
+        torch.onnx.export(
+            model, torch.randn(1, 3, 32, 32), onnx_path,
+            export_params=True, opset_version=13,
+            input_names=['input'], output_names=['output'],
+            dynamic_axes={'input': {0: 'batch'}, 'output': {0: 'batch'}}
+        )
+        
+        # Step 2: Try CoreML conversion
+        try:
+            import coremltools as ct
+            import onnx
+            
+            onnx_model = onnx.load(onnx_path)
+            mlmodel = ct.convert(onnx_model, source='onnx', minimum_deployment_target=ct.target.iOS15)
+            mlmodel.save(output)
+            print(json.dumps({'success': True, 'output_path': output}))
+            
+        except ImportError:
+            readme = output.replace('.mlmodel', '_Instructions.txt')
+            with open(readme, 'w') as f:
+                f.write("CoreML Conversion Instructions\n")
+                f.write("="*50 + "\n\n")
+                f.write(f"ONNX file created: {os.path.basename(onnx_path)}\n\n")
+                f.write("To convert on macOS:\n")
+                f.write("1. pip install coremltools\n")
+                f.write("2. Run:\n")
+                f.write("   import coremltools as ct\n")
+                f.write(f"   ct.convert('{os.path.basename(onnx_path)}', source='onnx').save('{os.path.basename(output)}')\n\n")
+                f.write("Or use ONNX Runtime Mobile (iOS/Android support)\n")
+            print(json.dumps({'success': False, 'error': 'coremltools not available on Windows', 'output_path': onnx_path, 'instructions': readme}))
+        
     except Exception as e:
-        print(f"[ERROR] CoreML conversion failed: {e}")
+        print(json.dumps({'success': False, 'error': str(e), 'traceback': traceback.format_exc()}))
+        sys.exit(1)

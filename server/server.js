@@ -837,7 +837,7 @@ app.get('/api/download-model', async (req, res) => {
       try {
         // Run conversion script
         const pythonExe = path.join(__dirname, '..', '.venv', 'Scripts', 'python.exe');
-        const convertScript = path.join(__dirname, 'convert_model.py');
+        const convertScript = path.join(__dirname, 'python', 'convert_model.py');
         
         const conversionProcess = spawn(pythonExe, [
           convertScript,
