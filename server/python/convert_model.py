@@ -17,6 +17,12 @@ def convert_model(model_path, format_type, num_classes):
     script_dir = os.path.dirname(os.path.abspath(__file__))
     models_dir = os.path.join(os.path.dirname(script_dir), 'trainedModel')
     
+    # Debug: Print paths
+    print(f"DEBUG: Script directory: {script_dir}", file=sys.stderr)
+    print(f"DEBUG: Models directory: {models_dir}", file=sys.stderr)
+    print(f"DEBUG: Model path: {model_path}", file=sys.stderr)
+    print(f"DEBUG: Format: {format_type}", file=sys.stderr)
+    
     # Determine output file
     model_name = os.path.splitext(os.path.basename(model_path))[0]
     
@@ -37,21 +43,35 @@ def convert_model(model_path, format_type, num_classes):
     export_script = os.path.join(script_dir, script_name)
     output_path = os.path.join(models_dir, output_filename)
     
+    # Debug: Print resolved paths
+    print(f"DEBUG: Export script: {export_script}", file=sys.stderr)
+    print(f"DEBUG: Output path: {output_path}", file=sys.stderr)
+    print(f"DEBUG: Script exists: {os.path.exists(export_script)}", file=sys.stderr)
+    
     # Check if export script exists
     if not os.path.exists(export_script):
         return {
             'success': False,
-            'error': f'Export script not found: {script_name}'
+            'error': f'Export script not found: {script_name}',
+            'searched_path': export_script
         }
     
     # Run the export script
     try:
+        # TFLite conversion needs more time due to ONNX->TF->TFLite pipeline
+        timeout_duration = 300 if format_type == 'tflite' else 60
+        
+        print(f"DEBUG: Running command: {sys.executable} {export_script} {model_path} {output_path} {num_classes}", file=sys.stderr)
         result = subprocess.run(
             [sys.executable, export_script, model_path, output_path, str(num_classes)],
             capture_output=True,
             text=True,
-            timeout=60
+            timeout=timeout_duration
         )
+        
+        print(f"DEBUG: Process return code: {result.returncode}", file=sys.stderr)
+        print(f"DEBUG: Process stdout: {result.stdout[:200] if result.stdout else 'None'}", file=sys.stderr)
+        print(f"DEBUG: Process stderr: {result.stderr[:200] if result.stderr else 'None'}", file=sys.stderr)
         
         # Parse JSON output from the export script
         if result.stdout:
@@ -84,7 +104,7 @@ def convert_model(model_path, format_type, num_classes):
     except subprocess.TimeoutExpired:
         return {
             'success': False,
-            'error': 'Conversion timed out (60s limit)'
+            'error': f'Conversion timed out ({timeout_duration}s limit)'
         }
     except Exception as e:
         return {

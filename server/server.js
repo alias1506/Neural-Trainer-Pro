@@ -543,7 +543,7 @@ app.post('/api/train', async (req, res) => {
     }
     
     // Spawn Python process using virtual environment
-    const pythonScript = path.join(__dirname, 'train.py');
+    const pythonScript = path.join(__dirname, 'python', 'train.py');
     const pythonPath = path.join(__dirname, '..', '.venv', 'Scripts', 'python.exe');
     const python = spawn(pythonPath, [
       pythonScript,
@@ -835,9 +835,15 @@ app.get('/api/download-model', async (req, res) => {
     // Convert model if format is not pytorch
     if (format !== 'pytorch' && format !== 'pth') {
       try {
-        // Run conversion script
-        const pythonExe = path.join(__dirname, '..', '.venv', 'Scripts', 'python.exe');
-        const convertScript = path.join(__dirname, 'python', 'convert_model.py');
+        // Run conversion script using unified converter
+        const pythonExe = path.resolve(__dirname, '..', '.venv', 'Scripts', 'python.exe');
+        const convertScript = path.resolve(__dirname, 'python', 'convert_model.py');
+        
+        console.log('Python executable:', pythonExe);
+        console.log('Convert script:', convertScript);
+        console.log('Model path:', absolutePath);
+        console.log('Format:', format);
+        console.log('Num classes:', numClasses);
         
         const conversionProcess = spawn(pythonExe, [
           convertScript,
@@ -855,6 +861,7 @@ app.get('/api/download-model', async (req, res) => {
 
         conversionProcess.stderr.on('data', (data) => {
           errorData += data.toString();
+          console.error('Python stderr:', data.toString());
         });
 
         await new Promise((resolve, reject) => {
@@ -919,12 +926,10 @@ app.get('/api/download-model', async (req, res) => {
         // Delete converted file if it exists
         if (fileToDownload !== absolutePath) {
           await fs.unlink(fileToDownload);
-          // Deleted converted file
         }
         
         // Delete the original .pth model file after export
         await fs.unlink(absolutePath);
-        // Model deleted after export
       } catch (e) {
         // Cleanup error
       }

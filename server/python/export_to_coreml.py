@@ -75,39 +75,39 @@ if __name__ == '__main__':
         
         model, nc = load_model(sys.argv[1], int(sys.argv[3]) if len(sys.argv) > 3 else 10)
         output = sys.argv[2]
-        onnx_path = output.replace('.mlmodel', '.onnx')
         
-        # Step 1: Create ONNX
-        torch.onnx.export(
-            model, torch.randn(1, 3, 32, 32), onnx_path,
-            export_params=True, opset_version=13,
-            input_names=['input'], output_names=['output'],
-            dynamic_axes={'input': {0: 'batch'}, 'output': {0: 'batch'}}
-        )
-        
-        # Step 2: Try CoreML conversion
+        # Try CoreML conversion
         try:
             import coremltools as ct
-            import onnx
             
-            onnx_model = onnx.load(onnx_path)
-            mlmodel = ct.convert(onnx_model, source='onnx', minimum_deployment_target=ct.target.iOS15)
+            # CoreML Tools v7+ doesn't support ONNX source directly
+            # We need to convert via PyTorch TorchScript instead
+            dummy_input = torch.randn(1, 3, 32, 32)
+            traced_model = torch.jit.trace(model, dummy_input)
+            
+            # Convert TorchScript to CoreML
+            mlmodel = ct.convert(
+                traced_model,
+                inputs=[ct.TensorType(name="input", shape=(1, 3, 32, 32))],
+                minimum_deployment_target=ct.target.iOS15
+            )
             mlmodel.save(output)
+            
             print(json.dumps({'success': True, 'output_path': output}))
             
-        except ImportError:
-            readme = output.replace('.mlmodel', '_Instructions.txt')
-            with open(readme, 'w') as f:
-                f.write("CoreML Conversion Instructions\n")
-                f.write("="*50 + "\n\n")
-                f.write(f"ONNX file created: {os.path.basename(onnx_path)}\n\n")
-                f.write("To convert on macOS:\n")
-                f.write("1. pip install coremltools\n")
-                f.write("2. Run:\n")
-                f.write("   import coremltools as ct\n")
-                f.write(f"   ct.convert('{os.path.basename(onnx_path)}', source='onnx').save('{os.path.basename(output)}')\n\n")
-                f.write("Or use ONNX Runtime Mobile (iOS/Android support)\n")
-            print(json.dumps({'success': False, 'error': 'coremltools not available on Windows', 'output_path': onnx_path, 'instructions': readme}))
+        except (ImportError, RuntimeError) as e:
+            # CoreML Tools doesn't work properly on Windows (BlobWriter error)
+            error_msg = str(e)
+            is_windows_error = 'BlobWriter' in error_msg or isinstance(e, RuntimeError)
+            
+            if is_windows_error:
+                print(json.dumps({
+                    'success': False,
+                    'error': 'CoreML conversion is not supported on Windows (BlobWriter error).',
+                    'hint': 'Please use ONNX format instead, which works on all platforms and can be converted to CoreML on macOS if needed.'
+                }))
+            else:
+                print(json.dumps({'success': False, 'error': f'coremltools import error: {error_msg}'}))
         
     except Exception as e:
         print(json.dumps({'success': False, 'error': str(e), 'traceback': traceback.format_exc()}))

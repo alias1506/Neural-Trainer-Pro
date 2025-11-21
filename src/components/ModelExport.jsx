@@ -175,7 +175,8 @@ export default function ModelExport({ progress, datasetInfo, onModelExported, on
         'coreml': '.mlmodel',
         'tflite': '.tflite'
       }
-      link.download = `${baseFilename}${formatExtensions[selectedFormat]}`
+      const expectedExtension = formatExtensions[selectedFormat]
+      link.download = `${baseFilename}${expectedExtension}`
       
       document.body.appendChild(link)
       link.click()
@@ -202,30 +203,72 @@ export default function ModelExport({ progress, datasetInfo, onModelExported, on
         onAllModelsCleared()
       }
 
-      // Show success toast briefly
-      Swal.fire({
-        icon: 'success',
-        title: 'Download Started!',
-        text: `Your model in ${format.name} format is being downloaded.`,
-        toast: true,
-        position: 'top-end',
-        showConfirmButton: false,
-        timer: 2000,
-        timerProgressBar: true
-      })
+      // Show success message in center
+      // Check if ONNX was provided instead of TFLite
+      const isTFLiteFallback = selectedFormat === 'tflite' && (downloadUrl.includes('.onnx') || link.download.endsWith('.onnx'))
+      
+      if (isTFLiteFallback) {
+        Swal.fire({
+          icon: 'info',
+          title: 'ONNX File Downloaded',
+          html: `
+            <div class="text-left">
+              <p class="mb-3">TFLite conversion has dependency conflicts on Windows.</p>
+              <p class="mb-3"><strong>ONNX file downloaded instead:</strong></p>
+              <ul class="list-disc list-inside mb-3 text-gray-700">
+                <li>Works directly with <strong>ONNX Runtime</strong> (all platforms)</li>
+                <li>Can be converted to TFLite using online tools if needed</li>
+                <li>Fully compatible with mobile and edge devices</li>
+              </ul>
+            </div>
+          `,
+          confirmButtonColor: '#3b82f6',
+          confirmButtonText: 'Got it',
+          width: 600
+        })
+      } else {
+        Swal.fire({
+          icon: 'success',
+          title: 'Download Started!',
+          text: `Your model in ${format.name} format is being downloaded.`,
+          confirmButtonColor: '#10b981',
+          timer: 2000,
+          timerProgressBar: true
+        })
+      }
     } catch (error) {
       // Try to get more details from the error response
       let errorDetails = error.message || 'Failed to download model'
       let installHint = ''
       
+      // Check if this is a known platform limitation
+      if (errorDetails.includes('not supported on Windows') || errorDetails.includes('BlobWriter')) {
+        Swal.fire({
+          icon: 'warning',
+          title: 'CoreML Not Available',
+          html: `
+            <div class="text-left">
+              <p class="mb-3">CoreML conversion is not supported on Windows.</p>
+              <p class="mb-3"><strong>Recommended alternative:</strong></p>
+              <ul class="list-disc list-inside mb-3 text-gray-700">
+                <li>Export as <strong>ONNX format</strong> instead</li>
+                <li>ONNX works on all platforms (iOS, Android, Windows, macOS, Linux)</li>
+                <li>Can be converted to CoreML on macOS if needed</li>
+              </ul>
+            </div>
+          `,
+          confirmButtonColor: '#3b82f6',
+          confirmButtonText: 'Got it',
+          width: 600
+        })
+        return
+      }
+      
+      // Generic error handling
       if (selectedFormat === 'onnx') {
         installHint = '<br><br><b>Install required package:</b><br><code>pip install onnx</code>'
       } else if (selectedFormat === 'torchscript') {
         installHint = '<br><br><b>TorchScript uses built-in PyTorch - no extra packages needed</b>'
-      } else if (selectedFormat === 'coreml') {
-        installHint = '<br><br><b>Install required package:</b><br><code>pip install coremltools</code>'
-      } else if (selectedFormat === 'tflite') {
-        installHint = '<br><br><b>Install required package:</b><br><code>pip install ai-edge-torch</code>'
       }
       
       Swal.fire({
