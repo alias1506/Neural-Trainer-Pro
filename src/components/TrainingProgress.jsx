@@ -282,8 +282,8 @@ export default function TrainingProgress({ progress, config, onCancel }) {
                           backgroundColor: 'rgba(239, 68, 68, 0.1)',
                           fill: false,
                           tension: 0.4,
-                          pointRadius: 3,
-                          pointHoverRadius: 5,
+                          pointRadius: 0,
+                          pointHoverRadius: 6,
                           yAxisID: 'y-loss',
                           spanGaps: false
                         },
@@ -294,8 +294,8 @@ export default function TrainingProgress({ progress, config, onCancel }) {
                           backgroundColor: 'rgba(251, 146, 60, 0.1)',
                           fill: false,
                           tension: 0.4,
-                          pointRadius: 3,
-                          pointHoverRadius: 5,
+                          pointRadius: 0,
+                          pointHoverRadius: 6,
                           yAxisID: 'y-loss',
                           spanGaps: false
                         },
@@ -306,8 +306,8 @@ export default function TrainingProgress({ progress, config, onCancel }) {
                           backgroundColor: 'rgba(34, 197, 94, 0.1)',
                           fill: false,
                           tension: 0.4,
-                          pointRadius: 3,
-                          pointHoverRadius: 5,
+                          pointRadius: 0,
+                          pointHoverRadius: 6,
                           yAxisID: 'y-accuracy',
                           spanGaps: false
                         },
@@ -318,8 +318,8 @@ export default function TrainingProgress({ progress, config, onCancel }) {
                           backgroundColor: 'rgba(59, 130, 246, 0.1)',
                           fill: false,
                           tension: 0.4,
-                          pointRadius: 3,
-                          pointHoverRadius: 5,
+                          pointRadius: 0,
+                          pointHoverRadius: 6,
                           yAxisID: 'y-accuracy',
                           spanGaps: false
                         }
