@@ -122,7 +122,7 @@ export default function ModelExport({ progress, datasetInfo, onModelExported, on
 
   const exportFormats = [
     { id: 'pytorch', name: 'PyTorch (.pth)', description: 'Native PyTorch format - Best for Python inference' },
-    { id: 'onnx', name: 'ONNX (.onnx)', description: 'Open Neural Network Exchange - Cross-platform deployment' },
+    { id: 'onnx', name: 'ONNX (.onnx)', description: 'Open Neural Network Exchange - Universal cross-platform format' },
     { id: 'torchscript', name: 'TorchScript (.pt)', description: 'Production-optimized PyTorch - C++ deployment ready' },
     { id: 'coreml', name: 'CoreML (.mlmodel)', description: 'Apple CoreML - iOS and macOS native' },
     { id: 'tflite', name: 'TensorFlow Lite (.tflite)', description: 'Mobile-optimized - Android and embedded devices' }
@@ -182,43 +182,37 @@ export default function ModelExport({ progress, datasetInfo, onModelExported, on
       document.body.removeChild(link)
 
       // Close loading and show success immediately
+      Swal.close()
+
+      // Immediately notify parent and refresh (don't wait for download to complete)
+      if (onModelExported) {
+        onModelExported(selectedModel.path, selectedFormat)
+      }
+      
+      // Refresh model list immediately (model will be deleted from server after download)
+      const response = await axios.get('http://localhost:3001/api/list-models')
+      const updatedModels = response.data.models || []
+      setAvailableModels(updatedModels)
+      
+      // Clear selected model
+      setSelectedModel(null)
+      
+      // If no models left, notify parent to reset state
+      if (updatedModels.length === 0 && onAllModelsCleared) {
+        onAllModelsCleared()
+      }
+
+      // Show success toast briefly
       Swal.fire({
         icon: 'success',
         title: 'Download Started!',
-        html: `
-          <div class="text-left">
-            <p class="mb-3 text-gray-700">Your model in ${format.name} format is being downloaded.</p>
-            <p class="text-sm text-gray-600">Check your browser's download folder.</p>
-            <div class="mt-4 p-3 bg-green-50 rounded">
-              <p class="text-sm font-semibold text-green-800 mb-2">Format:</p>
-              <p class="text-xs text-green-700">${format.description}</p>
-            </div>
-          </div>
-        `,
-        confirmButtonColor: '#10b981',
-        timer: 3000
+        text: `Your model in ${format.name} format is being downloaded.`,
+        toast: true,
+        position: 'top-end',
+        showConfirmButton: false,
+        timer: 2000,
+        timerProgressBar: true
       })
-
-      // Refresh model list in background after a short delay
-      setTimeout(async () => {
-        // Notify parent component about the export (for history update)
-        if (onModelExported) {
-          onModelExported(selectedModel.path, selectedFormat)
-        }
-        
-        // Refresh model list after export (model will be deleted from server)
-        const response = await axios.get('http://localhost:3001/api/list-models')
-        const updatedModels = response.data.models || []
-        setAvailableModels(updatedModels)
-        
-        // Clear selected model
-        setSelectedModel(null)
-        
-        // If no models left, notify parent to reset state
-        if (updatedModels.length === 0 && onAllModelsCleared) {
-          onAllModelsCleared()
-        }
-      }, 500)
     } catch (error) {
       // Try to get more details from the error response
       let errorDetails = error.message || 'Failed to download model'
@@ -231,7 +225,7 @@ export default function ModelExport({ progress, datasetInfo, onModelExported, on
       } else if (selectedFormat === 'coreml') {
         installHint = '<br><br><b>Install required package:</b><br><code>pip install coremltools</code>'
       } else if (selectedFormat === 'tflite') {
-        installHint = '<br><br><b>Install required packages:</b><br><code>pip install onnx onnx-tf tensorflow</code>'
+        installHint = '<br><br><b>Install required package:</b><br><code>pip install ai-edge-torch</code>'
       }
       
       Swal.fire({

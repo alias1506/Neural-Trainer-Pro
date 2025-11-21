@@ -407,24 +407,31 @@ class SimpleCNN(nn.Module):
         super(SimpleCNN, self).__init__()
         self.features = nn.Sequential(
             nn.Conv2d(3, 32, 3, padding=1),
+            nn.BatchNorm2d(32),
             nn.ReLU(),
             nn.MaxPool2d(2),
+            nn.Dropout2d(0.1),
             
             nn.Conv2d(32, 64, 3, padding=1),
+            nn.BatchNorm2d(64),
             nn.ReLU(),
             nn.MaxPool2d(2),
+            nn.Dropout2d(0.2),
             
             nn.Conv2d(64, 128, 3, padding=1),
+            nn.BatchNorm2d(128),
             nn.ReLU(),
             nn.MaxPool2d(2),
+            nn.Dropout2d(0.3),
         )
         
         self.classifier = nn.Sequential(
             nn.Flatten(),
-            nn.Linear(128 * 4 * 4, 128),
+            nn.Linear(128 * 4 * 4, 256),
+            nn.BatchNorm1d(256),
             nn.ReLU(),
             nn.Dropout(0.5),
-            nn.Linear(128, num_classes)
+            nn.Linear(256, num_classes)
         )
     
     def forward(self, x):
@@ -443,73 +450,111 @@ def train_model(dataset_path, config):
     learning_rate = config.get('learningRate', 0.001)
     dataset_type = config.get('datasetType', 'auto')  # Get dataset type from config
     
-    # Data transforms (optimized for speed)
-    transform = transforms.Compose([
-        transforms.Resize((32, 32), antialias=True),  # Faster with antialias
+    # Data augmentation for training (prevent overfitting)
+    train_transform = transforms.Compose([
+        transforms.Resize((32, 32), antialias=True),
+        transforms.RandomHorizontalFlip(p=0.5),
+        transforms.RandomRotation(15),
+        transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2),
+        transforms.ToTensor(),
+        transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
+    ])
+    
+    # Validation transform (no augmentation)
+    val_transform = transforms.Compose([
+        transforms.Resize((32, 32), antialias=True),
         transforms.ToTensor(),
         transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
     ])
     
     # Load dataset based on type
-    dataset = None
+    train_dataset = None
+    val_dataset = None
     num_classes = 0
     dataset_root = Path(dataset_path)
     
     # Load based on dataset type from config (optimized for speed)
     send_progress({'type': 'status', 'message': f'Initializing {dataset_type} dataset...'})
     
+    # First, load dataset to get info and split indices
     if dataset_type == 'yolo':
-        dataset = YOLODataset(dataset_path, transform=transform)
-        num_classes = len(dataset.class_names)
-        classes = dataset.class_names
+        full_dataset = YOLODataset(dataset_path, transform=val_transform)
+        num_classes = len(full_dataset.class_names)
+        classes = full_dataset.class_names
     
     elif dataset_type in ['cifar-binary', 'cifar-10', 'cifar-100']:
         # Check if binary format
         if any(dataset_root.glob('*batch*')) or any(dataset_root.glob('*.bin')):
             is_cifar100 = 'cifar-100' in dataset_type.lower()
-            dataset = CIFARBinaryDataset(dataset_path, transform=transform, is_cifar100=is_cifar100)
-            num_classes = len(dataset.class_names)
-            classes = dataset.class_names
+            full_dataset = CIFARBinaryDataset(dataset_path, transform=val_transform, is_cifar100=is_cifar100)
+            num_classes = len(full_dataset.class_names)
+            classes = full_dataset.class_names
         else:
             # Standard ImageFolder
             folder_path = dataset_root / 'train' if (dataset_root / 'train').exists() else dataset_root
-            dataset = datasets.ImageFolder(folder_path, transform=transform)
-            num_classes = len(dataset.classes)
-            classes = dataset.classes
+            full_dataset = datasets.ImageFolder(folder_path, transform=val_transform)
+            num_classes = len(full_dataset.classes)
+            classes = full_dataset.classes
     
     elif dataset_type in ['train-test-split', 'class-folders']:
         # Standard ImageFolder structure
         folder_path = dataset_root / 'train' if (dataset_root / 'train').exists() else dataset_root
-        dataset = datasets.ImageFolder(folder_path, transform=transform)
-        num_classes = len(dataset.classes)
-        classes = dataset.classes
+        full_dataset = datasets.ImageFolder(folder_path, transform=val_transform)
+        num_classes = len(full_dataset.classes)
+        classes = full_dataset.classes
     
     else:
         # Auto-detect (fallback only)
         if (dataset_root / 'train').exists():
-            dataset = datasets.ImageFolder(dataset_root / 'train', transform=transform)
-            num_classes = len(dataset.classes)
-            classes = dataset.classes
+            full_dataset = datasets.ImageFolder(dataset_root / 'train', transform=val_transform)
+            num_classes = len(full_dataset.classes)
+            classes = full_dataset.classes
         else:
-            dataset = datasets.ImageFolder(dataset_root, transform=transform)
-            num_classes = len(dataset.classes)
-            classes = dataset.classes
+            full_dataset = datasets.ImageFolder(dataset_root, transform=val_transform)
+            num_classes = len(full_dataset.classes)
+            classes = full_dataset.classes
     
     send_progress({
         'type': 'info',
         'classes': classes,
         'numClasses': num_classes,
-        'numImages': len(dataset)
+        'numImages': len(full_dataset)
     })
     
-    if len(dataset) == 0:
+    if len(full_dataset) == 0:
         send_progress({'type': 'error', 'message': 'No images found in dataset!'})
         sys.exit(1)
     
-    # Split dataset
-    train_size = int(0.8 * len(dataset))
-    val_size = len(dataset) - train_size
-    train_dataset, val_dataset = torch.utils.data.random_split(dataset, [train_size, val_size])
+    # Split dataset into train and validation
+    train_size = int(0.8 * len(full_dataset))
+    val_size = len(full_dataset) - train_size
+    train_indices, val_indices = torch.utils.data.random_split(
+        range(len(full_dataset)), [train_size, val_size]
+    )
+    
+    # Create separate datasets with different transforms
+    if dataset_type == 'yolo':
+        train_dataset_full = YOLODataset(dataset_path, transform=train_transform)
+        val_dataset_full = YOLODataset(dataset_path, transform=val_transform)
+    elif dataset_type in ['cifar-binary', 'cifar-10', 'cifar-100']:
+        if any(dataset_root.glob('*batch*')) or any(dataset_root.glob('*.bin')):
+            is_cifar100 = 'cifar-100' in dataset_type.lower()
+            train_dataset_full = CIFARBinaryDataset(dataset_path, transform=train_transform, is_cifar100=is_cifar100)
+            val_dataset_full = CIFARBinaryDataset(dataset_path, transform=val_transform, is_cifar100=is_cifar100)
+        else:
+            folder_path = dataset_root / 'train' if (dataset_root / 'train').exists() else dataset_root
+            train_dataset_full = datasets.ImageFolder(folder_path, transform=train_transform)
+            val_dataset_full = datasets.ImageFolder(folder_path, transform=val_transform)
+    else:
+        folder_path = dataset_root / 'train' if (dataset_root / 'train').exists() else dataset_root
+        if not folder_path.exists():
+            folder_path = dataset_root
+        train_dataset_full = datasets.ImageFolder(folder_path, transform=train_transform)
+        val_dataset_full = datasets.ImageFolder(folder_path, transform=val_transform)
+    
+    # Apply the split indices
+    train_dataset = torch.utils.data.Subset(train_dataset_full, train_indices.indices)
+    val_dataset = torch.utils.data.Subset(val_dataset_full, val_indices.indices)
     
     # Optimize DataLoader for GPU if available
     use_cuda = torch.cuda.is_available()
@@ -537,7 +582,10 @@ def train_model(dataset_path, config):
     
     model = SimpleCNN(num_classes).to(device)
     criterion = nn.CrossEntropyLoss()
-    optimizer = optim.Adam(model.parameters(), lr=learning_rate)
+    # Add weight decay (L2 regularization) to prevent overfitting
+    optimizer = optim.Adam(model.parameters(), lr=learning_rate, weight_decay=1e-4)
+    # Learning rate scheduler to reduce LR when validation loss plateaus
+    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=5, verbose=False)
     
     # Training loop
     start_time = time.time()
@@ -608,6 +656,9 @@ def train_model(dataset_path, config):
         
         val_loss = val_loss / len(val_loader)
         val_acc = val_correct / val_total
+        
+        # Update learning rate based on validation loss
+        scheduler.step(val_loss)
         
         elapsed = time.time() - start_time
         
