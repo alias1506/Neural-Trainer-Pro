@@ -32,10 +32,10 @@ class YOLODataset(Dataset):
         
         if classes_file.exists():
             with open(classes_file, 'r') as f:
-                self.class_names = [line.strip() for line in f if line.strip()]
+                    self.class_names = [line.strip() for line in f if line.strip()]
         
         if not self.class_names:
-            self.class_names = ['object']  # Default single class
+            self.class_names = ['class_0']  # Default single class
     
     def _load_images(self):
         # Look for images in train/valid folders
@@ -54,20 +54,12 @@ class YOLODataset(Dataset):
                 # Look for any images in root
                 image_dirs.append(self.root)
         
-        # Collect all images
+        # FAST: Just collect paths, don't load images or parse labels yet
         for img_dir in image_dirs:
             for img_path in img_dir.rglob('*'):
-                if img_path.suffix.lower() in ['.jpg', '.jpeg', '.png', '.gif', '.bmp']:
+                if img_path.suffix.lower() in ['.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp']:
                     self.images.append(str(img_path))
-                    
-                    # Try to find corresponding label file
-                    label_path = self._get_label_path(img_path)
-                    if label_path and label_path.exists():
-                        label = self._parse_yolo_label(label_path)
-                        self.labels.append(label)
-                    else:
-                        # Default to class 0 if no label found
-                        self.labels.append(0)
+                    self.labels.append(0)  # Default label, will parse on-demand if needed
     
     def _get_label_path(self, img_path):
         # Convert images/xxx.jpg to labels/xxx.txt
@@ -99,6 +91,13 @@ class YOLODataset(Dataset):
         if image.mode == 'P' and 'transparency' in image.info:
             image = image.convert('RGBA')
         image = image.convert('RGB')
+        
+        # Parse label on-demand (lazy loading)
+        if self.labels[idx] == 0:  # Only if not already loaded
+            label_path = self._get_label_path(Path(img_path))
+            if label_path and label_path.exists():
+                self.labels[idx] = self._parse_yolo_label(label_path)
+        
         label = self.labels[idx]
         
         if self.transform:
@@ -150,8 +149,6 @@ class CIFARBinaryDataset(Dataset):
             # Look for any .bin files or pickled files
             batch_files = list(self.root.glob('*batch*'))
         
-        print(f"Found {len(batch_files)} batch files: {[f.name for f in batch_files]}", file=sys.stderr)
-        
         for batch_file in batch_files:
             try:
                 # First, try to load as pickle (Python CIFAR format)
@@ -176,12 +173,9 @@ class CIFARBinaryDataset(Dataset):
                     
                     self.images.extend(batch_data)
                     self.labels.extend(batch_labels)
-                    
-                    print(f"Loaded {num_images} images from {batch_file.name} (pickle format)", file=sys.stderr)
             except (pickle.UnpicklingError, KeyError) as e:
                 # If pickle fails, try raw binary format (C/C++ CIFAR binary)
                 try:
-                    print(f"Trying raw binary format for {batch_file.name}...", file=sys.stderr)
                     with open(batch_file, 'rb') as f:
                         data = f.read()
                     
@@ -191,7 +185,6 @@ class CIFARBinaryDataset(Dataset):
                     num_records = len(data) // record_size
                     
                     if num_records == 0:
-                        print(f"File {batch_file.name} is too small for binary format", file=sys.stderr)
                         continue
                     
                     for i in range(num_records):
@@ -212,10 +205,7 @@ class CIFARBinaryDataset(Dataset):
                         
                         self.images.append(img_data)
                         self.labels.append(label)
-                    
-                    print(f"Loaded {num_records} images from {batch_file.name} (raw binary format)", file=sys.stderr)
                 except Exception as e2:
-                    print(f"Failed to load {batch_file.name} as raw binary: {e2}", file=sys.stderr)
                     continue
         
         # Convert to numpy arrays
@@ -279,7 +269,6 @@ class FlatImageDataset(Dataset):
                         # Check if it looks like a class list (reasonable number of short lines)
                         if 2 <= len(lines) <= 1000 and all(len(line) < 100 for line in lines[:10]):
                             self.class_names = lines
-                            print(f"Found classes in {txt_file.name}: {self.class_names[:5]}...", file=sys.stderr)
                             return
                 except:
                     continue
@@ -288,7 +277,7 @@ class FlatImageDataset(Dataset):
             self.class_names = ['class_0']  # Default single class
     
     def _load_images(self):
-        # Look in common locations
+        # FAST: Just collect image paths, don't parse labels yet
         search_paths = [
             self.root,
             self.root / 'images',
@@ -302,16 +291,9 @@ class FlatImageDataset(Dataset):
                 continue
                 
             for img_path in search_path.rglob('*'):
-                if img_path.suffix.lower() in ['.jpg', '.jpeg', '.png', '.gif', '.bmp']:
+                if img_path.suffix.lower() in ['.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp']:
                     self.images.append(str(img_path))
-                    
-                    # Try to get label from corresponding .txt file (YOLO style)
-                    label = self._get_label_from_file(img_path)
-                    if label is None:
-                        # Default to class 0
-                        label = 0
-                    
-                    self.labels.append(label)
+                    self.labels.append(0)  # Will parse on-demand during training
     
     def _get_label_from_file(self, img_path):
         # Check for label file in ../labels/ directory
@@ -395,6 +377,13 @@ class CustomImageDataset(Dataset):
         if image.mode == 'P' and 'transparency' in image.info:
             image = image.convert('RGBA')
         image = image.convert('RGB')
+        
+        # Parse label on-demand (lazy loading)
+        if self.labels[idx] == 0:
+            label = self._get_label_from_file(Path(img_path))
+            if label is not None:
+                self.labels[idx] = label
+        
         label = self.labels[idx]
         
         if self.transform:
@@ -474,102 +463,126 @@ def train_model(dataset_path, config):
     dataset_root = Path(dataset_path)
     
     # Load based on dataset type from config (optimized for speed)
-    send_progress({'type': 'status', 'message': f'Initializing {dataset_type} dataset...'})
+    send_progress({'type': 'init', 'message': f'Loading {dataset_type} dataset from {dataset_path}...'})
     
-    # First, load dataset to get info and split indices
+    # Load dataset ONCE and reuse it (FAST initialization with lazy loading)
     if dataset_type == 'yolo':
-        full_dataset = YOLODataset(dataset_path, transform=val_transform)
-        num_classes = len(full_dataset.class_names)
-        classes = full_dataset.class_names
+        # Load with minimal transform first (just to get metadata)
+        train_dataset_full = YOLODataset(dataset_path, transform=train_transform)
+        num_classes = len(train_dataset_full.class_names)
+        classes = train_dataset_full.class_names
+        total_samples = len(train_dataset_full)
+        send_progress({'type': 'init', 'message': f'Found {total_samples} images in YOLO dataset'})
     
     elif dataset_type in ['cifar-binary', 'cifar-10', 'cifar-100']:
         # Check if binary format
         if any(dataset_root.glob('*batch*')) or any(dataset_root.glob('*.bin')):
             is_cifar100 = 'cifar-100' in dataset_type.lower()
-            full_dataset = CIFARBinaryDataset(dataset_path, transform=val_transform, is_cifar100=is_cifar100)
-            num_classes = len(full_dataset.class_names)
-            classes = full_dataset.class_names
+            train_dataset_full = CIFARBinaryDataset(dataset_path, transform=train_transform, is_cifar100=is_cifar100)
+            num_classes = len(train_dataset_full.class_names)
+            classes = train_dataset_full.class_names
         else:
             # Standard ImageFolder
             folder_path = dataset_root / 'train' if (dataset_root / 'train').exists() else dataset_root
-            full_dataset = datasets.ImageFolder(folder_path, transform=val_transform)
-            num_classes = len(full_dataset.classes)
-            classes = full_dataset.classes
+            train_dataset_full = datasets.ImageFolder(folder_path, transform=train_transform)
+            num_classes = len(train_dataset_full.classes)
+            classes = train_dataset_full.classes
+        total_samples = len(train_dataset_full)
+        send_progress({'type': 'init', 'message': f'Found {total_samples} images in CIFAR dataset'})
     
     elif dataset_type in ['train-test-split', 'class-folders']:
         # Standard ImageFolder structure
         folder_path = dataset_root / 'train' if (dataset_root / 'train').exists() else dataset_root
-        full_dataset = datasets.ImageFolder(folder_path, transform=val_transform)
-        num_classes = len(full_dataset.classes)
-        classes = full_dataset.classes
+        train_dataset_full = datasets.ImageFolder(folder_path, transform=train_transform)
+        num_classes = len(train_dataset_full.classes)
+        classes = train_dataset_full.classes
+        total_samples = len(train_dataset_full)
+        send_progress({'type': 'init', 'message': f'Found {total_samples} images across {num_classes} classes'})
     
     else:
         # Auto-detect (fallback only)
         if (dataset_root / 'train').exists():
-            full_dataset = datasets.ImageFolder(dataset_root / 'train', transform=val_transform)
-            num_classes = len(full_dataset.classes)
-            classes = full_dataset.classes
+            train_dataset_full = datasets.ImageFolder(dataset_root / 'train', transform=train_transform)
+            num_classes = len(train_dataset_full.classes)
+            classes = train_dataset_full.classes
         else:
-            full_dataset = datasets.ImageFolder(dataset_root, transform=val_transform)
-            num_classes = len(full_dataset.classes)
-            classes = full_dataset.classes
+            train_dataset_full = datasets.ImageFolder(dataset_root, transform=train_transform)
+            num_classes = len(train_dataset_full.classes)
+            classes = train_dataset_full.classes
+        total_samples = len(train_dataset_full)
+        send_progress({'type': 'init', 'message': f'Found {total_samples} images (auto-detected)'})
     
     send_progress({
         'type': 'info',
         'classes': classes,
         'numClasses': num_classes,
-        'numImages': len(full_dataset)
+        'numImages': total_samples
     })
     
-    if len(full_dataset) == 0:
+    if total_samples == 0:
         send_progress({'type': 'error', 'message': 'No images found in dataset!'})
         sys.exit(1)
     
-    # Split dataset into train and validation
-    train_size = int(0.8 * len(full_dataset))
-    val_size = len(full_dataset) - train_size
+    # Split dataset into train and validation (80/20 split)
+    send_progress({'type': 'init', 'message': 'Splitting dataset into train/validation sets...'})
+    train_size = int(0.8 * total_samples)
+    val_size = total_samples - train_size
+    
+    # Create random split indices
+    generator = torch.Generator().manual_seed(42)  # Fixed seed for reproducibility
     train_indices, val_indices = torch.utils.data.random_split(
-        range(len(full_dataset)), [train_size, val_size]
+        range(total_samples), [train_size, val_size], generator=generator
     )
     
-    # Create separate datasets with different transforms
-    if dataset_type == 'yolo':
-        train_dataset_full = YOLODataset(dataset_path, transform=train_transform)
-        val_dataset_full = YOLODataset(dataset_path, transform=val_transform)
-    elif dataset_type in ['cifar-binary', 'cifar-10', 'cifar-100']:
-        if any(dataset_root.glob('*batch*')) or any(dataset_root.glob('*.bin')):
-            is_cifar100 = 'cifar-100' in dataset_type.lower()
-            train_dataset_full = CIFARBinaryDataset(dataset_path, transform=train_transform, is_cifar100=is_cifar100)
-            val_dataset_full = CIFARBinaryDataset(dataset_path, transform=val_transform, is_cifar100=is_cifar100)
-        else:
-            folder_path = dataset_root / 'train' if (dataset_root / 'train').exists() else dataset_root
-            train_dataset_full = datasets.ImageFolder(folder_path, transform=train_transform)
-            val_dataset_full = datasets.ImageFolder(folder_path, transform=val_transform)
-    else:
-        folder_path = dataset_root / 'train' if (dataset_root / 'train').exists() else dataset_root
-        if not folder_path.exists():
-            folder_path = dataset_root
-        train_dataset_full = datasets.ImageFolder(folder_path, transform=train_transform)
-        val_dataset_full = datasets.ImageFolder(folder_path, transform=val_transform)
+    # OPTIMIZATION: Reuse same dataset with transform wrapper instead of loading twice
+    # This avoids scanning filesystem twice which is the slow part
+    class TransformWrapper(Dataset):
+        """Wrapper to apply different transforms to same dataset"""
+        def __init__(self, dataset, transform):
+            self.dataset = dataset
+            self.transform = transform
+            
+        def __len__(self):
+            return len(self.dataset)
+        
+        def __getitem__(self, idx):
+            # Get raw data without transform
+            if hasattr(self.dataset, 'transform'):
+                old_transform = self.dataset.transform
+                self.dataset.transform = None
+                img, label = self.dataset[idx]
+                self.dataset.transform = old_transform
+            else:
+                img, label = self.dataset[idx]
+            
+            if self.transform:
+                img = self.transform(img)
+            return img, label
+    
+    val_dataset_full = TransformWrapper(train_dataset_full, val_transform)
     
     # Apply the split indices
     train_dataset = torch.utils.data.Subset(train_dataset_full, train_indices.indices)
     val_dataset = torch.utils.data.Subset(val_dataset_full, val_indices.indices)
     
     # Optimize DataLoader for GPU if available
+    send_progress({'type': 'init', 'message': 'Creating data loaders...'})
     use_cuda = torch.cuda.is_available()
     dataloader_kwargs = {
         'batch_size': batch_size,
         'pin_memory': use_cuda,  # Faster data transfer to GPU
-        'num_workers': 0  # Set to 0 to avoid multiprocessing pickle errors on Windows during cancellation
+        'num_workers': 2 if use_cuda else 0,  # Use 2 workers for GPU, 0 for CPU
+        'persistent_workers': True if use_cuda else False,  # Keep workers alive between epochs
+        'prefetch_factor': 2 if use_cuda else None  # Prefetch batches for faster loading
     }
     
     train_loader = DataLoader(train_dataset, shuffle=True, **dataloader_kwargs)
     val_loader = DataLoader(val_dataset, shuffle=False, **dataloader_kwargs)
     
-    send_progress({'type': 'status', 'message': f'Training on {train_size} images, validating on {val_size}'})
+    send_progress({'type': 'init', 'message': f'Ready: {train_size} training images, {val_size} validation images'})
     
     # Model setup - Automatically detect and use GPU if available
+    send_progress({'type': 'init', 'message': 'Initializing model and optimizer...'})
     if torch.cuda.is_available():
         device = torch.device('cuda')
         gpu_name = torch.cuda.get_device_name(0)
@@ -584,10 +597,16 @@ def train_model(dataset_path, config):
     criterion = nn.CrossEntropyLoss()
     # Add weight decay (L2 regularization) to prevent overfitting
     optimizer = optim.Adam(model.parameters(), lr=learning_rate, weight_decay=1e-4)
-    # Learning rate scheduler to reduce LR when validation loss plateaus
-    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=5, verbose=False)
+    # Learning rate scheduler to reduce LR when validation loss plateaus (prevents overfitting)
+    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=10, verbose=False)
+    
+    # Early stopping to prevent overfitting
+    best_val_loss = float('inf')
+    patience_counter = 0
+    early_stop_patience = 20  # Stop if no improvement for 20 epochs
     
     # Training loop
+    send_progress({'type': 'init', 'message': f'Starting training for {epochs} epochs...'})
     start_time = time.time()
     
     for epoch in range(epochs):
@@ -659,6 +678,27 @@ def train_model(dataset_path, config):
         
         # Update learning rate based on validation loss
         scheduler.step(val_loss)
+        
+        # Early stopping check
+        if val_loss < best_val_loss:
+            best_val_loss = val_loss
+            patience_counter = 0
+        else:
+            patience_counter += 1
+            if patience_counter >= early_stop_patience:
+                elapsed = time.time() - start_time
+                send_progress({
+                    'type': 'epoch',
+                    'epoch': epoch + 1,
+                    'totalEpochs': epochs,
+                    'trainLoss': train_loss,
+                    'trainAcc': train_acc,
+                    'valLoss': val_loss,
+                    'valAcc': val_acc,
+                    'elapsed': elapsed,
+                    'earlyStop': True
+                })
+                break  # Stop training
         
         elapsed = time.time() - start_time
         

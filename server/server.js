@@ -15,7 +15,6 @@ let wsClient = null;
 let currentTrainingProcess = null; // Track current training process
 
 wss.on('connection', (ws) => {
-  console.log('WebSocket client connected');
   wsClient = ws;
 });
 
@@ -39,7 +38,6 @@ const storage = multer.diskStorage({
 // Detect dataset structure
 async function buildFolderTree(dirPath, maxDepth = 10, currentDepth = 0) {
   if (currentDepth >= maxDepth) {
-    console.log(`  Max depth ${maxDepth} reached for ${dirPath}`);
     return [];
   }
   
@@ -72,8 +70,6 @@ async function buildFolderTree(dirPath, maxDepth = 10, currentDepth = 0) {
         // Ignore entry errors
       }
     }
-    
-    // Tree building complete
     
     return children;
   } catch (error) {
@@ -228,10 +224,6 @@ async function detectDatasetStructure(datasetPath) {
   }
   
   const hasYoloLabels = await hasYoloStructure();
-  
-
-  
-  // Dataset structure detected
   
   // CIFAR binary format (check FIRST before YOLO)
   if (hasBinFiles && (hasCifarBatch || hasCifarMeta || hasCifarHtml)) {
@@ -535,9 +527,13 @@ app.post('/api/train', async (req, res) => {
   try {
     const { datasetPath, config } = req.body;
     
+    console.log('\n=== Training Request Received ===');
+    console.log(`Dataset: ${datasetPath}`);
+    console.log(`Epochs: ${config.epochs}, Batch Size: ${config.batchSize}, Learning Rate: ${config.learningRate}`);
+    
     // Kill any existing training process
     if (currentTrainingProcess) {
-      // Killing existing training process
+      console.log('Terminating existing training process...');
       currentTrainingProcess.kill('SIGTERM');
       currentTrainingProcess = null;
     }
@@ -545,6 +541,7 @@ app.post('/api/train', async (req, res) => {
     // Spawn Python process using virtual environment
     const pythonScript = path.join(__dirname, 'python', 'train.py');
     const pythonPath = path.join(__dirname, '..', '.venv', 'Scripts', 'python.exe');
+    console.log('Starting Python training process...');
     const python = spawn(pythonPath, [
       pythonScript,
       datasetPath,
@@ -559,7 +556,6 @@ app.post('/api/train', async (req, res) => {
     python.stdout.on('data', (data) => {
       const message = data.toString();
       output += message;
-      // Python message received
       
       // Parse progress and send via WebSocket
       if (wsClient && wsClient.readyState === WebSocket.OPEN) {
@@ -568,6 +564,25 @@ app.post('/api/train', async (req, res) => {
           lines.forEach(line => {
             if (line.startsWith('PROGRESS:')) {
               const progress = JSON.parse(line.replace('PROGRESS:', ''));
+              
+              // Log progress to server console
+              if (progress.type === 'init') {
+                console.log(`[INIT] ${progress.message}`);
+              } else if (progress.type === 'epoch') {
+                const elapsed = Math.floor(progress.elapsed);
+                console.log(`[Epoch ${progress.epoch}/${progress.totalEpochs}] Loss: ${progress.trainLoss.toFixed(4)}, Acc: ${(progress.trainAcc * 100).toFixed(2)}%, Val Loss: ${progress.valLoss.toFixed(4)}, Val Acc: ${(progress.valAcc * 100).toFixed(2)}% (${elapsed}s)`);
+                if (progress.earlyStop) {
+                  console.log('Early stopping triggered!');
+                }
+              } else if (progress.type === 'complete') {
+                console.log('\n=== Training Complete ===');
+                console.log(`Final Train Acc: ${(progress.finalTrainAcc * 100).toFixed(2)}%, Val Acc: ${(progress.finalValAcc * 100).toFixed(2)}%`);
+                console.log(`Model saved: ${progress.modelPath}`);
+                console.log(`Classes (${progress.numClasses}): ${progress.classes.join(', ')}\n`);
+              } else if (progress.type === 'error') {
+                console.error(`[ERROR] ${progress.message}`);
+              }
+              
               wsClient.send(JSON.stringify(progress));
             }
           });
@@ -578,16 +593,17 @@ app.post('/api/train', async (req, res) => {
     });
     
     python.stderr.on('data', (data) => {
-      // Python error
+      const errorMsg = data.toString();
+      console.error('[Python Error]', errorMsg);
     });
     
     python.on('close', (code) => {
       if (code === 0) {
-        // Training completed
+        console.log('Training process completed successfully.\n');
       } else if (code === null) {
-        // Training cancelled
+        console.log('Training process was cancelled.\n');
       } else {
-        // Training failed
+        console.error(`Training process failed with exit code ${code}\n`);
       }
       currentTrainingProcess = null;
     });
@@ -793,11 +809,10 @@ app.get('/api/list-models', async (req, res) => {
           if (entry.isDirectory() && entry.name !== 'temp') {
             const fullPath = path.join(uploadsDir, entry.name);
             await fs.rm(fullPath, { recursive: true, force: true });
-            console.log(`Auto-cleaned orphaned dataset: ${entry.name}`);
           }
         }
       } catch (cleanError) {
-        console.warn('Auto-cleanup warning:', cleanError);
+        // Auto-cleanup errors ignored
       }
     }
 
@@ -835,15 +850,9 @@ app.get('/api/download-model', async (req, res) => {
     // Convert model if format is not pytorch
     if (format !== 'pytorch' && format !== 'pth') {
       try {
-        // Run conversion script using unified converter
-        const pythonExe = path.resolve(__dirname, '..', '.venv', 'Scripts', 'python.exe');
-        const convertScript = path.resolve(__dirname, 'python', 'convert_model.py');
-        
-        console.log('Python executable:', pythonExe);
-        console.log('Convert script:', convertScript);
-        console.log('Model path:', absolutePath);
-        console.log('Format:', format);
-        console.log('Num classes:', numClasses);
+        // Run conversion script
+        const pythonExe = path.join(__dirname, '..', '.venv', 'Scripts', 'python.exe');
+        const convertScript = path.join(__dirname, 'python', 'convert_model.py');
         
         const conversionProcess = spawn(pythonExe, [
           convertScript,

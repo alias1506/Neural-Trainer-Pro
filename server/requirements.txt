@@ -1,9 +1,17 @@
-torch>=2.0.0
-torchvision>=0.15.0
-Pillow>=9.0.0
-numpy>=1.24.0
-protobuf>=5.27.0,<6.0
-onnx>=1.17.0
-onnx2tf>=1.24.0
+# Core training dependencies (compatible versions)
+# Note: Install PyTorch with CUDA support using:
+# pip install torch==2.5.1 torchvision==0.20.1 --index-url https://download.pytorch.org/whl/cu121
+torch==2.5.1
+torchvision==0.20.1
+Pillow==11.3.0
+
+# Model export dependencies
+onnx==1.17.0
+
+# Optional: TFLite export (remove if not needed)
+protobuf==5.29.2
+onnx2tf==1.24.0
 tensorflow==2.19.0
-tensorflow-probability==0.25.0
+
+# Optional: CoreML export (macOS only, remove on Windows)
+coremltools==8.1; sys_platform == 'darwin'

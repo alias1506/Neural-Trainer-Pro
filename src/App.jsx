@@ -22,7 +22,11 @@ export default function App() {
     const saved = sessionStorage.getItem('datasetInfo')
     return saved ? JSON.parse(saved) : null
   })
-  const [config, setConfig] = useState({ epochs: 10, batchSize: 32, learningRate: 0.001, optimizer: 'adam' })
+  const [config, setConfig] = useState(() => {
+    // Load from sessionStorage on mount to preserve user's settings
+    const saved = sessionStorage.getItem('trainingConfig')
+    return saved ? JSON.parse(saved) : { epochs: 10, batchSize: 32, learningRate: 0.001, optimizer: 'adam' }
+  })
   const [progress, setProgress] = useState({ status: 'idle', epoch: 0, trainLoss: 0, trainAcc: 0, valLoss: 0, valAcc: 0, timeMs: 0, lossHistory: [], accHistory: [], valLossHistory: [], valAccHistory: [], modelPath: '' })
   const [trainingHistory, setTrainingHistory] = useState(() => {
     const saved = sessionStorage.getItem('trainingHistory')
@@ -64,6 +68,11 @@ export default function App() {
   useEffect(() => {
     sessionStorage.setItem('trainingHistory', JSON.stringify(trainingHistory))
   }, [trainingHistory])
+
+  // Save config to sessionStorage whenever it changes
+  useEffect(() => {
+    sessionStorage.setItem('trainingConfig', JSON.stringify(config))
+  }, [config])
 
   // Save datasetInfo to sessionStorage whenever it changes (only 1 dataset at a time)
   useEffect(() => {
@@ -147,16 +156,10 @@ export default function App() {
 
   const handleTrainingUpdate = async (data) => {
     if (data.type === 'status') {
-      console.clear()
-      console.log('🚀 STATUS:', data.message)
       setProgress(prev => ({ ...prev, status: 'preparing', message: data.message }))
     } else if (data.type === 'info') {
-      console.log('ℹ️ TRAINING INFO:')
-      console.log(`  📊 Total Images: ${data.numImages}`)
-      console.log(`  🏷️  Classes: ${data.numClasses}`)
       setDatasetInfo(prev => ({ ...prev, ...data }))
     } else if (data.type === 'device') {
-      console.log('💻 DEVICE:', data.device)
       Swal.fire({
         icon: 'info',
         title: 'Training Device',
@@ -179,20 +182,6 @@ export default function App() {
         }
       })
     } else if (data.type === 'epoch') {
-      // Only show console output after first epoch completes
-      if (data.epoch >= 1) {
-        console.clear()
-        console.log('═'.repeat(60))
-        console.log(`📊 EPOCH ${data.epoch}/${data.totalEpochs}`)
-        console.log('═'.repeat(60))
-        console.log(`🔴 Train Loss:      ${data.trainLoss.toFixed(4)}`)
-        console.log(`🟢 Train Accuracy:  ${(data.trainAcc * 100).toFixed(2)}%`)
-        console.log(`🔵 Val Loss:        ${data.valLoss.toFixed(4)}`)
-        console.log(`🟣 Val Accuracy:    ${(data.valAcc * 100).toFixed(2)}%`)
-        console.log(`⏱️  Time Elapsed:    ${data.elapsed.toFixed(2)}s`)
-        console.log('═'.repeat(60))
-      }
-      
       setProgress(prev => ({
         ...prev,
         status: 'training',
@@ -223,14 +212,6 @@ export default function App() {
         return prev
       })
     } else if (data.type === 'complete') {
-      console.clear()
-      console.log('═'.repeat(60))
-      console.log('✅ TRAINING COMPLETE!')
-      console.log('═'.repeat(60))
-      console.log(`🎯 Final Validation Accuracy: ${(data.finalValAcc * 100).toFixed(2)}%`)
-      console.log(`📁 Model saved at: ${data.modelPath}`)
-      console.log('═'.repeat(60))
-      
       // Store relative path for download (remove absolute base path)
       const relativePath = data.modelPath.replace(/^.*[\\\/]uploads[\\\/]/, 'uploads/')
       setProgress(prev => ({ ...prev, status: 'done', modelPath: relativePath }))
@@ -392,7 +373,6 @@ export default function App() {
         }
       }
       setDatasetInfo(updatedInfo)
-      localStorage.setItem('datasetInfo', JSON.stringify(updatedInfo))
       
       Swal.fire({
         icon: 'success',
@@ -412,7 +392,6 @@ export default function App() {
         await axios.post(`${API_URL}/clean-uploads`)
         
         setDatasetInfo(null)
-        localStorage.removeItem('datasetInfo')
         
         Swal.fire({
           icon: 'success',
@@ -432,7 +411,6 @@ export default function App() {
     try {
       // Clear any existing dataset data before uploading new one
       setDatasetInfo(null)
-      localStorage.removeItem('datasetInfo')
       
       // Clean up old datasets on server before uploading new one
       try {
