@@ -1,538 +1,454 @@
-import React, { useState, useEffect, useRef } from 'react'
+import React from 'react'
 import { Line } from 'react-chartjs-2'
 import {
-  Chart as ChartJS,
-  CategoryScale,
-  LinearScale,
-  PointElement,
-  LineElement,
-  Title,
-  Tooltip,
-  Legend,
-  Filler
+    Chart as ChartJS,
+    CategoryScale,
+    LinearScale,
+    PointElement,
+    LineElement,
+    Title,
+    Tooltip,
+    Legend,
+    Filler
 } from 'chart.js'
 
-// Register Chart.js components
+// Register ChartJS components
 ChartJS.register(
-  CategoryScale,
-  LinearScale,
-  PointElement,
-  LineElement,
-  Title,
-  Tooltip,
-  Legend,
-  Filler
+    CategoryScale,
+    LinearScale,
+    PointElement,
+    LineElement,
+    Title,
+    Tooltip,
+    Legend,
+    Filler
 )
 
 export default function TrainingProgress({ progress, config, onCancel }) {
-  const [elapsedTime, setElapsedTime] = useState(0)
-  const startTimeRef = useRef(Date.now())
-  
-  // Update elapsed time every second during training
-  useEffect(() => {
-    if (progress.status === 'training') {
-      const interval = setInterval(() => {
-        setElapsedTime(Date.now() - startTimeRef.current)
-      }, 1000)
-      return () => clearInterval(interval)
+    const chartColor = '#6B728E'
+    const chartFillColor = 'rgba(107, 114, 142, 0.1)'
+    const { status, epoch, totalEpochs, trainLoss, trainAcc, valLoss, valAcc, timeMs, lossHistory = [], accHistory = [], valLossHistory = [], valAccHistory = [], batch, totalBatches } = progress
+
+    // Calculate smooth progress including within-epoch progress
+    let progressPercentage = 0;
+    if (status === 'training' || status === 'preparing') {
+        if (totalEpochs > 0) {
+            const completedEpochs = Math.max(0, epoch - 1);
+            const currentEpochProgress = (batch && totalBatches) ? (batch / totalBatches) : 0;
+            progressPercentage = ((completedEpochs + currentEpochProgress) / totalEpochs) * 100;
+            if (epoch === totalEpochs && batch === totalBatches && totalEpochs > 0 && totalBatches > 0) {
+                progressPercentage = 100;
+            }
+            if (progressPercentage < 0) progressPercentage = 0;
+            if (progressPercentage > 100) progressPercentage = 100;
+        }
+    } else if (status === 'completed' || status === 'done') {
+        progressPercentage = 100;
+    } else {
+        progressPercentage = 0;
     }
-  }, [progress.status])
-  
-  // Prepare chart data for Chart.js
-  // X-axis: Always show all epochs from 1 to totalEpochs
-  const totalEpochs = config.epochs || progress.totalEpochs || 0
-  const epochs = totalEpochs > 0 
-    ? Array.from({ length: totalEpochs }, (_, idx) => idx + 1)
-    : [0]
-  
-  // Y-axis: Fill data for completed epochs, null for remaining epochs
-  const completedEpochs = progress.lossHistory ? progress.lossHistory.length : 0
-  
-  const trainLossData = totalEpochs > 0
-    ? Array.from({ length: totalEpochs }, (_, idx) => 
-        idx < completedEpochs && progress.lossHistory 
-          ? parseFloat(progress.lossHistory[idx].toFixed(4))
-          : null
-      )
-    : [0]
-  
-  const trainAccuracyData = totalEpochs > 0
-    ? Array.from({ length: totalEpochs }, (_, idx) => 
-        idx < completedEpochs && progress.accHistory
-          ? parseFloat((progress.accHistory[idx] * 100).toFixed(2))
-          : null
-      )
-    : [0]
 
-  const valLossData = totalEpochs > 0
-    ? Array.from({ length: totalEpochs }, (_, idx) => 
-        idx < completedEpochs && progress.valLossHistory
-          ? parseFloat(progress.valLossHistory[idx].toFixed(4))
-          : null
-      )
-    : [0]
-  
-  const valAccuracyData = totalEpochs > 0
-    ? Array.from({ length: totalEpochs }, (_, idx) => 
-        idx < completedEpochs && progress.valAccHistory
-          ? parseFloat((progress.valAccHistory[idx] * 100).toFixed(2))
-          : null
-      )
-    : [0]
+    const formatTime = (ms) => {
+        if (!ms) return '00:00'
+        const seconds = Math.floor((ms / 1000) % 60)
+        const minutes = Math.floor((ms / 1000 / 60) % 60)
+        const hours = Math.floor(ms / 1000 / 3600)
+        return `${hours > 0 ? hours + ':' : ''}${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`
+    }
 
-  const getStatusIcon = () => {
-    if (progress.status === 'preparing') return '📦'
-    if (progress.status === 'training') return '🔥'
-    if (progress.status === 'done') return '✅'
-    if (progress.status === 'error') return '❌'
-    if (progress.status === 'cancelled') return '⏸️'
-    return '⏳'
-  }
+    // Use only completed epoch data from history arrays (no live batch updates)
+    // Add initial 0 point so graphs are visible from start
+    const trainLossDataPoints = [0, ...(lossHistory || [])];
+    const trainAccDataPoints = [0, ...(accHistory || [])];
+    const valLossDataPoints = [0, ...(valLossHistory || [])];
+    const valAccDataPoints = [0, ...(valAccHistory || [])];
 
-  const formatTime = (ms) => {
-    const seconds = Math.floor(ms / 1000)
-    const minutes = Math.floor(seconds / 60)
-    const hours = Math.floor(minutes / 60)
-    if (hours > 0) return `${hours}h ${minutes % 60}m ${seconds % 60}s`
-    if (minutes > 0) return `${minutes}m ${seconds % 60}s`
-    return `${seconds}s`
-  }
+    // X-axis shows total configured epochs (e.g., if user set 10 epochs, show 1-10)
+    // Start from 0 to show initial resting point
+    // Parse as integer to prevent string concatenation issues
+    const totalConfiguredEpochs = parseInt(totalEpochs || config?.epochs || 10, 10);
+    const epochLabels = [0, ...Array.from({ length: totalConfiguredEpochs }, (_, i) => i + 1)];
 
-  const progressPercent = progress.totalEpochs > 0 
-    ? progress.status === 'done' || (progress.epoch >= progress.totalEpochs)
-      ? 100
-      : Math.round((progress.epoch / progress.totalEpochs) * 100) 
-    : 0
+    const chartOptions = {
+        responsive: true,
+        maintainAspectRatio: false,
+        animation: false, // Disable all animations to prevent lines from bottom
+        plugins: {
+            legend: {
+                display: false
+            },
+            tooltip: {
+                mode: 'index',
+                intersect: false,
+                backgroundColor: 'rgba(0, 0, 0, 0.8)',
+                padding: 8,
+                titleFont: { size: 11 },
+                bodyFont: { size: 10 }
+            }
+        },
+        scales: {
+            x: {
+                display: true,
+                grid: {
+                    display: true,
+                    color: 'rgba(0, 0, 0, 0.05)',
+                    drawBorder: true
+                },
+                ticks: {
+                    display: true,
+                    font: { size: 10 },
+                    maxTicksLimit: 8,
+                    color: '#666666'
+                },
+                border: {
+                    display: true,
+                    color: 'rgba(0, 0, 0, 0.1)'
+                }
+            },
+            y: {
+                display: true,
+                beginAtZero: true, // Start y-axis from 0
+                grid: {
+                    display: true,
+                    color: 'rgba(0, 0, 0, 0.05)',
+                    drawBorder: true
+                },
+                ticks: {
+                    display: true,
+                    font: { size: 10 },
+                    color: '#666666'
+                },
+                border: {
+                    display: true,
+                    color: 'rgba(0, 0, 0, 0.1)'
+                }
+            }
+        },
+        interaction: {
+            mode: 'nearest',
+            axis: 'x',
+            intersect: false
+        },
+        elements: {
+            point: {
+                radius: 0, // Hide dots
+                hitRadius: 10,
+                hoverRadius: 4,
+                backgroundColor: chartColor
+            },
+            line: {
+                tension: 0.3
+            }
+        }
+    }
 
-  return (
-    <div className="bg-gray-100">
-      {/* Top Stats Row - Realtime Updates */}
-      <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-4">
-        {/* Train Loss */}
-        <div className="bg-gradient-to-br from-red-500 to-red-600 rounded-lg shadow-lg p-4 text-white">
-          <div className="flex items-center justify-between">
-            <div>
-              <p className="text-red-100 text-sm font-medium">Train Loss</p>
-              <p className="text-3xl font-bold mt-1">{progress.trainLoss ? progress.trainLoss.toFixed(4) : 'N/A'}</p>
-            </div>
-            <div className="bg-white/20 rounded-full p-3">
-              <svg className="w-8 h-8" fill="currentColor" viewBox="0 0 20 20">
-                <path d="M2 10a8 8 0 018-8v8h8a8 8 0 11-16 0z"/>
-              </svg>
-            </div>
-          </div>
-        </div>
+    const trainLossData = {
+        labels: epochLabels,
+        datasets: [{
+            label: 'Training Loss',
+            data: trainLossDataPoints,
+            borderColor: chartColor,
+            backgroundColor: chartFillColor,
+            borderWidth: 2,
+            tension: 0.3,
+            fill: true,
+            spanGaps: true // Smooth transitions between points
+        }]
+    }
 
-        {/* Train Accuracy */}
-        <div className="bg-gradient-to-br from-green-500 to-green-600 rounded-lg shadow-lg p-4 text-white">
-          <div className="flex items-center justify-between">
-            <div>
-              <p className="text-green-100 text-sm font-medium">Train Accuracy</p>
-              <p className="text-3xl font-bold mt-1">{progress.trainAcc ? (progress.trainAcc * 100).toFixed(2) : 0}%</p>
-            </div>
-            <div className="bg-white/20 rounded-full p-3">
-              <svg className="w-8 h-8" fill="currentColor" viewBox="0 0 20 20">
-                <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clipRule="evenodd"/>
-              </svg>
-            </div>
-          </div>
-        </div>
+    const valLossData = {
+        labels: epochLabels,
+        datasets: [{
+            label: 'Validation Loss',
+            data: valLossDataPoints,
+            borderColor: chartColor,
+            backgroundColor: chartFillColor,
+            borderWidth: 2,
+            tension: 0.3,
+            fill: true,
+            spanGaps: true
+        }]
+    }
 
-        {/* Val Loss */}
-        <div className="bg-gradient-to-br from-orange-500 to-orange-600 rounded-lg shadow-lg p-4 text-white">
-          <div className="flex items-center justify-between">
-            <div>
-              <p className="text-orange-100 text-sm font-medium">Val Loss</p>
-              <p className="text-3xl font-bold mt-1">{progress.valLoss ? progress.valLoss.toFixed(4) : '0.0000'}</p>
-            </div>
-            <div className="bg-white/20 rounded-full p-3">
-              <svg className="w-8 h-8" fill="currentColor" viewBox="0 0 20 20">
-                <path d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 9.586 8.707 8.293z"/>
-              </svg>
-            </div>
-          </div>
-        </div>
+    const trainAccData = {
+        labels: epochLabels,
+        datasets: [{
+            label: 'Training Accuracy',
+            data: trainAccDataPoints,
+            borderColor: chartColor,
+            backgroundColor: chartFillColor,
+            borderWidth: 2,
+            tension: 0.3,
+            fill: true,
+            spanGaps: true
+        }]
+    }
 
-        {/* Val Accuracy */}
-        <div className="bg-gradient-to-br from-blue-500 to-blue-600 rounded-lg shadow-lg p-4 text-white">
-          <div className="flex items-center justify-between">
-            <div>
-              <p className="text-blue-100 text-sm font-medium">Val Accuracy</p>
-              <p className="text-3xl font-bold mt-1">{progress.valAcc ? (progress.valAcc * 100).toFixed(2) : 0}%</p>
-            </div>
-            <div className="bg-white/20 rounded-full p-3">
-              <svg className="w-8 h-8" fill="currentColor" viewBox="0 0 20 20">
-                <path fillRule="evenodd" d="M6.267 3.455a3.066 3.066 0 001.745-.723 3.066 3.066 0 013.976 0 3.066 3.066 0 001.745.723 3.066 3.066 0 012.812 2.812c.051.643.304 1.254.723 1.745a3.066 3.066 0 010 3.976 3.066 3.066 0 00-.723 1.745 3.066 3.066 0 01-2.812 2.812 3.066 3.066 0 00-1.745.723 3.066 3.066 0 01-3.976 0 3.066 3.066 0 00-1.745-.723 3.066 3.066 0 01-2.812-2.812 3.066 3.066 0 00-.723-1.745 3.066 3.066 0 010-3.976 3.066 3.066 0 00.723-1.745 3.066 3.066 0 012.812-2.812zm7.44 5.252a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clipRule="evenodd"/>
-              </svg>
-            </div>
-          </div>
-        </div>
-      </div>
+    const valAccData = {
+        labels: epochLabels,
+        datasets: [{
+            label: 'Validation Accuracy',
+            data: valAccDataPoints,
+            borderColor: chartColor,
+            backgroundColor: chartFillColor,
+            borderWidth: 2,
+            tension: 0.3,
+            fill: true,
+            spanGaps: true
+        }]
+    }
 
-      {/* Main Content Grid */}
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-        {/* Left Column - Progress and Config */}
-        <div className="lg:col-span-2 space-y-4">
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-            {/* Progress Bar Card */}
-            <div className="bg-white rounded-lg shadow-md overflow-hidden">
-              <div className="bg-gradient-to-r from-purple-500 to-indigo-600 text-white p-4">
-                <h3 className="text-lg font-bold flex items-center gap-2">
-                  <span>{getStatusIcon()}</span>
-                  Training Progress
-                </h3>
-              </div>
-              <div className="p-6">
-                <div className="mb-4">
-                  <div className="flex justify-between text-sm mb-2">
-                    <span className="font-semibold text-gray-700">Epoch {progress.epoch} / {progress.totalEpochs}</span>
-                    <span className="font-bold text-purple-600">{progressPercent}%</span>
-                  </div>
-                  <div className="w-full bg-gray-200 rounded-full h-6 overflow-hidden shadow-inner">
-                    <div 
-                      className="bg-gradient-to-r from-purple-500 to-pink-500 h-full rounded-full transition-all duration-500 flex items-center justify-end pr-2"
-                      style={{ width: `${progressPercent}%` }}
-                    >
-                      {progressPercent > 10 && <span className="text-xs font-bold text-white">{progressPercent}%</span>}
+    let statusText = status
+    let dotClass = 'bg-gray-400'
+    if (status === 'training') {
+        statusText = 'Training'
+        dotClass = 'bg-green-500 animate-pulse'
+    } else if (status === 'upload-failed') {
+        statusText = 'Upload Failed'
+        dotClass = 'bg-gray-400'
+    } else if (status === 'preparing') {
+        statusText = 'Uploading...'
+        dotClass = 'bg-blue-400 animate-pulse'
+    } else if (status === 'network-error') {
+        statusText = 'Network Error'
+        dotClass = 'bg-gray-400'
+    }
+
+    return (
+        <div className="flex flex-col gap-3 animate-fade-in" style={{ height: 'calc(100vh - 140px)' }}>
+            {/* Header */}
+            <div className="flex items-center justify-between">
+                <div>
+                    <h2 className="text-lg font-semibold">Training Progress</h2>
+                    <div className="flex items-center gap-2 mt-0.5">
+                        <span className={`w-2 h-2 rounded-full ${dotClass}`}></span>
+                        <span className="text-xs text-muted capitalize">{statusText}</span>
+                        <span className="text-xs text-gray-300">|</span>
+                        <span className="text-xs text-muted">Time: {formatTime(timeMs)}</span>
                     </div>
-                  </div>
                 </div>
-                
-                <div className="space-y-2">
-                  <div className="flex justify-between items-center p-2 bg-gray-50 rounded">
-                    <span className="text-sm text-gray-600">Status</span>
-                    <span className="font-semibold text-gray-800 capitalize">{progress.status}</span>
-                  </div>
-                  <div className="flex justify-between items-center p-2 bg-gray-50 rounded">
-                    <span className="text-sm text-gray-600">Time Elapsed</span>
-                    <span className="font-semibold text-gray-800">
-                      {progress.status === 'idle' 
-                        ? '00:00'
-                        : progress.status === 'preparing' || (progress.totalEpochs > 0 && progress.epoch === 0)
-                        ? 'Calculating...'
-                        : formatTime(elapsedTime)}
-                    </span>
-                  </div>
-                  <div className="flex justify-between items-center p-2 bg-gray-50 rounded">
-                    <span className="text-sm text-gray-600">Est. Time Remaining</span>
-                    <span className="font-semibold text-gray-800">
-                      {progress.status === 'idle' 
-                        ? '00:00'
-                        : progress.status === 'preparing' || (progress.totalEpochs > 0 && progress.epoch === 0)
-                        ? 'Calculating...'
-                        : progress.totalEpochs > 0 && progress.epoch > 0
-                        ? formatTime((elapsedTime / progress.epoch) * (progress.totalEpochs - progress.epoch))
-                        : '00:00'}
-                    </span>
-                  </div>
-                </div>
-              </div>
+                {status === 'training' && (
+                    <button onClick={onCancel} className="btn btn-secondary text-xs px-3 py-1.5">
+                        Cancel
+                    </button>
+                )}
             </div>
 
-            {/* Configuration Card */}
-            <div className="bg-white rounded-lg shadow-md overflow-hidden">
-              <div className="bg-gradient-to-r from-blue-500 to-cyan-600 text-white p-4">
-                <h3 className="text-lg font-bold flex items-center gap-2">
-                  <span>⚙️</span>
-                  Configuration
-                </h3>
-              </div>
-              <div className="p-6">
-                <div className="space-y-3">
-                  <div className="flex justify-between items-center p-3 bg-blue-50 rounded">
-                    <span className="text-sm text-gray-600 font-medium">Epochs</span>
-                    <span className="font-bold text-blue-700">{config.epochs}</span>
-                  </div>
-                  <div className="flex justify-between items-center p-3 bg-green-50 rounded">
-                    <span className="text-sm text-gray-600 font-medium">Batch Size</span>
-                    <span className="font-bold text-green-700">{config.batchSize}</span>
-                  </div>
-                  <div className="flex justify-between items-center p-3 bg-purple-50 rounded">
-                    <span className="text-sm text-gray-600 font-medium">Learning Rate</span>
-                    <span className="font-bold text-purple-700">{config.learningRate}</span>
-                  </div>
-                  <div className="flex justify-between items-center p-3 bg-orange-50 rounded">
-                    <span className="text-sm text-gray-600 font-medium">Optimizer</span>
-                    <span className="font-bold text-orange-700 capitalize">{config.optimizer}</span>
-                  </div>
-                </div>
-              </div>
-            </div>
-          </div>
-
-          {/* Combined Chart - Single Graph with All Metrics */}
-          <div className="bg-white rounded-lg shadow-md overflow-hidden">
-            <div className="bg-gradient-to-r from-indigo-500 to-purple-600 text-white p-4">
-              <h3 className="text-lg font-bold flex items-center gap-2">
-                <span>📈</span>
-                Training Metrics - Real-time
-              </h3>
-            </div>
-            <div className="p-6">
-              {(progress.status === 'preparing' || progress.status === 'training' || progress.status === 'done') ? (
-                <div className="relative">
-                  <Line
-                    data={{
-                      labels: epochs.length > 0 ? epochs : [0],
-                      datasets: [
-                        {
-                          label: 'Train Loss',
-                          data: trainLossData,
-                          borderColor: 'rgb(239, 68, 68)',
-                          backgroundColor: 'rgba(239, 68, 68, 0.1)',
-                          fill: false,
-                          tension: 0.4,
-                          pointRadius: 0,
-                          pointHoverRadius: 6,
-                          yAxisID: 'y-loss',
-                          spanGaps: false
-                        },
-                        {
-                          label: 'Val Loss',
-                          data: valLossData,
-                          borderColor: 'rgb(251, 146, 60)',
-                          backgroundColor: 'rgba(251, 146, 60, 0.1)',
-                          fill: false,
-                          tension: 0.4,
-                          pointRadius: 0,
-                          pointHoverRadius: 6,
-                          yAxisID: 'y-loss',
-                          spanGaps: false
-                        },
-                        {
-                          label: 'Train Accuracy',
-                          data: trainAccuracyData,
-                          borderColor: 'rgb(34, 197, 94)',
-                          backgroundColor: 'rgba(34, 197, 94, 0.1)',
-                          fill: false,
-                          tension: 0.4,
-                          pointRadius: 0,
-                          pointHoverRadius: 6,
-                          yAxisID: 'y-accuracy',
-                          spanGaps: false
-                        },
-                        {
-                          label: 'Val Accuracy',
-                          data: valAccuracyData,
-                          borderColor: 'rgb(59, 130, 246)',
-                          backgroundColor: 'rgba(59, 130, 246, 0.1)',
-                          fill: false,
-                          tension: 0.4,
-                          pointRadius: 0,
-                          pointHoverRadius: 6,
-                          yAxisID: 'y-accuracy',
-                          spanGaps: false
-                        }
-                      ]
-                    }}
-                    options={{
-                      responsive: true,
-                      maintainAspectRatio: true,
-                      animation: {
-                        duration: 0,
-                        x: {
-                          duration: 0
-                        },
-                        y: {
-                          duration: 0
-                        }
-                      },
-                      interaction: {
-                        mode: 'index',
-                        intersect: false
-                      },
-                      plugins: {
-                        legend: {
-                          display: true,
-                          position: 'top',
-                          labels: {
-                            usePointStyle: true,
-                            padding: 15
-                          }
-                        },
-                        tooltip: {
-                          mode: 'index',
-                          intersect: false,
-                          callbacks: {
-                            label: function(context) {
-                              const label = context.dataset.label || ''
-                              const value = context.parsed.y
-                              if (label.includes('Accuracy')) {
-                                return label + ': ' + value.toFixed(2) + '%'
-                              }
-                              return label + ': ' + value.toFixed(4)
-                            }
-                          }
-                        }
-                      },
-                      scales: {
-                        x: {
-                          title: {
-                            display: true,
-                            text: 'Epoch'
-                          }
-                        },
-                        'y-loss': {
-                          type: 'linear',
-                          position: 'left',
-                          beginAtZero: true,
-                          title: {
-                            display: true,
-                            text: 'Loss',
-                            color: 'rgb(239, 68, 68)'
-                          },
-                          ticks: {
-                            color: 'rgb(239, 68, 68)'
-                          }
-                        },
-                        'y-accuracy': {
-                          type: 'linear',
-                          position: 'right',
-                          beginAtZero: true,
-                          max: 100,
-                          title: {
-                            display: true,
-                            text: 'Accuracy (%)',
-                            color: 'rgb(34, 197, 94)'
-                          },
-                          ticks: {
-                            color: 'rgb(34, 197, 94)'
-                          },
-                          grid: {
-                            drawOnChartArea: false
-                          }
-                        }
-                      }
-                    }}
-                    height={200}
-                  />
-                </div>
-              ) : (
-                <div className="text-center py-8 text-gray-400">
-                  <div className="text-5xl mb-2">📊</div>
-                  <p className="text-sm">Training data will appear here...</p>
-                </div>
-              )}
-            </div>
-          </div>
-        </div>
-
-        {/* Right Column - Control Panel */}
-        <div className="space-y-4">
-          {/* Control Card */}
-          <div className="bg-white rounded-lg shadow-md overflow-hidden">
-            <div className="bg-gradient-to-r from-red-500 to-pink-600 text-white p-4">
-              <h3 className="text-lg font-bold flex items-center gap-2">
-                <span>🎮</span>
-                Controls
-              </h3>
-            </div>
-            <div className="p-6">
-              <button
-                onClick={onCancel}
-                disabled={progress.status !== 'training'}
-                className={`w-full py-3 rounded-lg font-bold transition-all shadow-lg ${
-                  progress.status === 'training'
-                    ? 'bg-gradient-to-r from-red-600 to-red-700 text-white hover:from-red-700 hover:to-red-800 hover:shadow-xl transform hover:scale-105'
-                    : 'bg-gray-300 text-gray-500 cursor-not-allowed'
-                }`}
-              >
-                {progress.status === 'training' ? '⏸️ Stop Training' : '⏹️ Not Running'}
-              </button>
-              
-              {progress.status === 'training' && (
-                <div className="mt-4 p-4 bg-yellow-50 border border-yellow-200 rounded-lg">
-                  <p className="text-xs text-yellow-800">
-                    <strong>Note:</strong> Stopping will save current progress
-                  </p>
-                </div>
-              )}
-            </div>
-          </div>
-
-          {/* Metrics Summary Card */}
-          <div className="bg-white rounded-lg shadow-md overflow-hidden">
-            <div className="bg-gradient-to-r from-gray-600 to-gray-800 text-white p-4">
-              <h3 className="text-lg font-bold flex items-center gap-2">
-                <span>📊</span>
-                Current Metrics
-              </h3>
-            </div>
-            <div className="p-4 space-y-3">
-              <div className="bg-red-50 p-3 rounded-lg border-l-4 border-red-500">
-                <p className="text-xs text-red-600 font-semibold mb-1">TRAIN LOSS</p>
-                <p className="text-2xl font-bold text-red-700">{progress.trainLoss ? progress.trainLoss.toFixed(4) : 'N/A'}</p>
-              </div>
-              <div className="bg-green-50 p-3 rounded-lg border-l-4 border-green-500">
-                <p className="text-xs text-green-600 font-semibold mb-1">TRAIN ACCURACY</p>
-                <p className="text-2xl font-bold text-green-700">{progress.trainAcc ? `${(progress.trainAcc * 100).toFixed(2)}%` : 'N/A'}</p>
-              </div>
-              <div className="bg-orange-50 p-3 rounded-lg border-l-4 border-orange-500">
-                <p className="text-xs text-orange-600 font-semibold mb-1">VAL LOSS</p>
-                <p className="text-2xl font-bold text-orange-700">{progress.valLoss ? progress.valLoss.toFixed(4) : 'N/A'}</p>
-              </div>
-              <div className="bg-blue-50 p-3 rounded-lg border-l-4 border-blue-500">
-                <p className="text-xs text-blue-600 font-semibold mb-1">VAL ACCURACY</p>
-                <p className="text-2xl font-bold text-blue-700">{progress.valAcc ? `${(progress.valAcc * 100).toFixed(2)}%` : 'N/A'}</p>
-              </div>
-            </div>
-          </div>
-
-          {/* Epoch History Table (only if has data) */}
-          {progress.lossHistory && progress.lossHistory.length > 0 && (
-            <div className="bg-white rounded-lg shadow-md overflow-hidden">
-              <div className="bg-gradient-to-r from-indigo-500 to-blue-600 text-white p-4">
-                <h3 className="text-lg font-bold flex items-center gap-2">
-                  <span>📜</span>
-                  Epoch History
-                </h3>
-              </div>
-              <div className="overflow-auto max-h-64">
-                <table className="w-full text-sm">
-                  <thead className="bg-gray-100 sticky top-0">
-                    <tr>
-                      <th className="px-3 py-2 text-left font-semibold text-gray-700">Epoch</th>
-                      <th className="px-3 py-2 text-right font-semibold text-gray-700">Train Loss</th>
-                      <th className="px-3 py-2 text-right font-semibold text-gray-700">Train Acc</th>
-                      <th className="px-3 py-2 text-right font-semibold text-gray-700">Val Loss</th>
-                      <th className="px-3 py-2 text-right font-semibold text-gray-700">Val Acc</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {progress.lossHistory.map((loss, idx) => (
-                      <tr key={idx} className="border-b border-gray-100 hover:bg-gray-50">
-                        <td className="px-3 py-2 font-semibold text-gray-700">{idx + 1}</td>
-                        <td className="px-3 py-2 text-right">
-                          <span className="font-bold text-red-600">{loss.toFixed(4)}</span>
-                        </td>
-                        <td className="px-3 py-2 text-right">
-                          <span className="font-bold text-green-600">
-                            {progress.accHistory && progress.accHistory[idx] !== undefined
-                              ? `${(progress.accHistory[idx] * 100).toFixed(2)}%`
-                              : 'N/A'}
-                          </span>
-                        </td>
-                        <td className="px-3 py-2 text-right">
-                          {progress.valLossHistory && progress.valLossHistory[idx] !== undefined && (
-                            <span className="font-bold text-orange-600">{progress.valLossHistory[idx].toFixed(4)}</span>
-                          )}
-                        </td>
-                        <td className="px-3 py-2 text-right">
-                          {progress.valAccHistory && progress.valAccHistory[idx] !== undefined && (
-                            <span className="font-bold text-blue-600">
-                              {(progress.valAccHistory[idx] * 100).toFixed(2)}%
+            {/* Main Grid Layout */}
+            <div className="flex-1 grid grid-cols-2 gap-3 min-h-0">
+                {/* Left Column */}
+                <div className="flex flex-col gap-3 overflow-y-auto custom-scrollbar pr-1">
+                    {/* Epoch Progress */}
+                    <div className="card p-3">
+                        <div className="flex items-center justify-between mb-2">
+                            <span className="text-xs font-medium text-muted">
+                                Epoch {epoch}/{totalEpochs}
+                                {batch && totalBatches && (
+                                    <span className="ml-2 text-gray-400">
+                                        (Batch {batch}/{totalBatches})
+                                    </span>
+                                )}
                             </span>
-                          )}
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
+                            <span className="text-xs font-semibold" style={{ color: '#404258' }}>
+                                {Math.round(progressPercentage)}%
+                            </span>
+                        </div>
+                        <div className="w-full bg-gray-200 rounded-full h-2 overflow-hidden">
+                            <div
+                                className="h-full rounded-full"
+                                style={{
+                                    width: `${progressPercentage}%`,
+                                    backgroundColor: '#404258',
+                                    transition: 'width 0.5s ease-out'
+                                }}
+                            ></div>
+                        </div>
+                    </div>
+
+                    {/* Metrics Grid - 2x2 */}
+                    <div className="grid grid-cols-2 gap-2">
+                        {/* Train Loss */}
+                        <div className="card p-3">
+                            <div className="text-xs text-muted mb-1">Train Loss</div>
+                            <div className="text-lg font-semibold text-red-600">
+                                {trainLoss ? trainLoss.toFixed(4) : '—'}
+                            </div>
+                        </div>
+
+                        {/* Train Acc */}
+                        <div className="card p-3">
+                            <div className="text-xs text-muted mb-1">Train Acc</div>
+                            <div className="text-lg font-semibold text-green-600">
+                                {trainAcc ? (trainAcc * 100).toFixed(2) + '%' : '—'}
+                            </div>
+                        </div>
+
+                        {/* Val Loss */}
+                        <div className="card p-3">
+                            <div className="text-xs text-muted mb-1">Val Loss</div>
+                            <div className="text-lg font-semibold text-orange-600">
+                                {valLoss ? valLoss.toFixed(4) : '—'}
+                            </div>
+                        </div>
+
+                        {/* Val Acc */}
+                        <div className="card p-3">
+                            <div className="text-xs text-muted mb-1">Val Acc</div>
+                            <div className="text-lg font-semibold text-blue-600">
+                                {valAcc ? (valAcc * 100).toFixed(2) + '%' : '—'}
+                            </div>
+                        </div>
+                    </div>
+
+                    {/* Configuration */}
+                    <div className="card p-3">
+                        <h3 className="text-sm font-semibold mb-2">Configuration</h3>
+                        <div className="space-y-1.5">
+                            <div className="flex justify-between text-xs">
+                                <span className="text-muted">Learning Rate</span>
+                                <span className="font-semibold">{config?.learningRate || '—'}</span>
+                            </div>
+                            <div className="flex justify-between text-xs">
+                                <span className="text-muted">Batch Size</span>
+                                <span className="font-semibold">{config?.batchSize || '—'}</span>
+                            </div>
+                            <div className="flex justify-between text-xs">
+                                <span className="text-muted">Optimizer</span>
+                                <span className="font-semibold capitalize">{config?.optimizer || '—'}</span>
+                            </div>
+                            <div className="flex justify-between text-xs">
+                                <span className="text-muted">Model</span>
+                                <span className="font-semibold capitalize">{config?.datasetType || '—'}</span>
+                            </div>
+                        </div>
+                    </div>
+
+                    {/* Training Logs */}
+                    <div className="card flex-1 min-h-0 flex flex-col p-0 overflow-hidden">
+                        <div className="p-3 border-b bg-gray-50 flex-shrink-0">
+                            <h3 className="text-sm font-semibold">Training Logs</h3>
+                        </div>
+                        <div className="flex-1 overflow-y-auto custom-scrollbar">
+                            <table className="w-full text-xs text-left">
+                                <thead className="text-muted border-b sticky top-0 bg-white z-10">
+                                    <tr>
+                                        <th className="pl-4 py-2 font-medium">Epoch</th>
+                                        <th className="py-2 font-medium">Train Loss</th>
+                                        <th className="py-2 font-medium">Train Acc</th>
+                                        <th className="py-2 font-medium">Val Loss</th>
+                                        <th className="pr-4 py-2 font-medium">Val Acc</th>
+                                    </tr>
+                                </thead>
+                                <tbody className="divide-y divide-gray-100">
+                                    {Array.isArray(lossHistory) && lossHistory.map((loss, i) => {
+                                        // Only show row if ALL data is available for this epoch
+                                        const hasAllData =
+                                            loss !== undefined &&
+                                            accHistory[i] !== undefined &&
+                                            valLossHistory[i] !== undefined &&
+                                            valAccHistory[i] !== undefined;
+
+                                        // Also exclude rows where all values are zero (initial state)
+                                        const hasValidData =
+                                            loss > 0 ||
+                                            accHistory[i] > 0 ||
+                                            valLossHistory[i] > 0 ||
+                                            valAccHistory[i] > 0;
+
+                                        if (!hasAllData || !hasValidData) return null;
+
+                                        return (
+                                            <tr key={i} className="hover:bg-gray-50">
+                                                <td className="pl-4 py-2">{i + 1}</td>
+                                                <td className="py-2 text-red-600 font-medium">{loss.toFixed(4)}</td>
+                                                <td className="py-2 text-green-600 font-medium">{(accHistory[i] * 100).toFixed(2)}%</td>
+                                                <td className="py-2 text-orange-600 font-medium">{valLossHistory[i].toFixed(4)}</td>
+                                                <td className="pr-4 py-2 text-blue-600 font-medium">{(valAccHistory[i] * 100).toFixed(2)}%</td>
+                                            </tr>
+                                        );
+                                    })}
+                                </tbody>
+                            </table>
+                            {(!lossHistory || lossHistory.length === 0 ||
+                                !lossHistory.some((loss, i) =>
+                                    loss !== undefined &&
+                                    accHistory[i] !== undefined &&
+                                    valLossHistory[i] !== undefined &&
+                                    valAccHistory[i] !== undefined
+                                )) && (
+                                    <div className="text-center py-8 text-muted text-xs">
+                                        Waiting for first epoch...
+                                    </div>
+                                )}
+                        </div>
+                    </div>
+                </div>
+
+                {/* Right Column - Charts Grid 2x2 */}
+                <div className="grid grid-rows-2 gap-3 min-h-0">
+                    {/* Top Row */}
+                    <div className="grid grid-cols-2 gap-3">
+                        {/* Training Loss Chart */}
+                        <div className="card p-0 overflow-hidden flex flex-col">
+                            <div className="p-2 border-b bg-gray-50 flex-shrink-0">
+                                <h4 className="text-xs font-semibold text-red-600">Training Loss</h4>
+                            </div>
+                            <div className="flex-1 p-2 flex items-center justify-center">
+                                {trainLossDataPoints.length > 0 ? (
+                                    <Line data={trainLossData} options={chartOptions} />
+                                ) : (
+                                    <div className="text-xs text-muted">No data yet</div>
+                                )}
+                            </div>
+                        </div>
+
+                        {/* Validation Loss Chart */}
+                        <div className="card p-0 overflow-hidden flex flex-col">
+                            <div className="p-2 border-b bg-gray-50 flex-shrink-0">
+                                <h4 className="text-xs font-semibold text-orange-600">Validation Loss</h4>
+                            </div>
+                            <div className="flex-1 p-2 flex items-center justify-center">
+                                {valLossDataPoints.length > 0 ? (
+                                    <Line data={valLossData} options={chartOptions} />
+                                ) : (
+                                    <div className="text-xs text-muted">No data yet</div>
+                                )}
+                            </div>
+                        </div>
+                    </div>
+
+                    {/* Bottom Row */}
+                    <div className="grid grid-cols-2 gap-3">
+                        {/* Training Accuracy Chart */}
+                        <div className="card p-0 overflow-hidden flex flex-col">
+                            <div className="p-2 border-b bg-gray-50 flex-shrink-0">
+                                <h4 className="text-xs font-semibold text-green-600">Training Accuracy</h4>
+                            </div>
+                            <div className="flex-1 p-2 flex items-center justify-center">
+                                {trainAccDataPoints.length > 0 ? (
+                                    <Line data={trainAccData} options={chartOptions} />
+                                ) : (
+                                    <div className="text-xs text-muted">No data yet</div>
+                                )}
+                            </div>
+                        </div>
+
+                        {/* Validation Accuracy Chart */}
+                        <div className="card p-0 overflow-hidden flex flex-col">
+                            <div className="p-2 border-b bg-gray-50 flex-shrink-0">
+                                <h4 className="text-xs font-semibold text-blue-600">Validation Accuracy</h4>
+                            </div>
+                            <div className="flex-1 p-2 flex items-center justify-center">
+                                {valAccDataPoints.length > 0 ? (
+                                    <Line data={valAccData} options={chartOptions} />
+                                ) : (
+                                    <div className="text-xs text-muted">No data yet</div>
+                                )}
+                            </div>
+                        </div>
+                    </div>
+                </div>
             </div>
-          )}
         </div>
-      </div>
-    </div>
-  )
+    )
 }

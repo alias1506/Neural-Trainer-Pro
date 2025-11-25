@@ -1,568 +1,840 @@
 import React, { useState, useEffect } from 'react'
 import Swal from 'sweetalert2'
 import axios from 'axios'
+import Pagination from './Pagination'
 
-export default function ModelExport({ progress, datasetInfo, onModelExported, onAllModelsCleared }) {
-  const [selectedFormat, setSelectedFormat] = useState('pytorch')
-  const [exporting, setExporting] = useState(false)
-  const [availableModels, setAvailableModels] = useState([])
-  const [selectedModel, setSelectedModel] = useState(null)
-  const [loading, setLoading] = useState(true)
-  const [modelMetadata, setModelMetadata] = useState({})
+const API_URL = 'http://localhost:3001/api'
 
-  // Fetch available models on component mount (silently)
-  useEffect(() => {
-    fetchAvailableModels()
-  }, [])
+export default function ModelExport({ progress, datasetInfo, trainingHistory = [], onModelExported, onAllModelsCleared }) {
+    const [models, setModels] = useState([])
+    const [selectedModels, setSelectedModels] = useState([])
+    const [exportFormat, setExportFormat] = useState('pytorch')
+    const [searchQuery, setSearchQuery] = useState('')
+    const [sortBy, setSortBy] = useState('date') // date, accuracy, name, size
+    const [sortOrder, setSortOrder] = useState('desc') // asc, desc
+    const [viewMode, setViewMode] = useState('table') // table, grid
+    const [selectedModel, setSelectedModel] = useState(null) // For details modal
+    const [exportHistory, setExportHistory] = useState([])
+    const [currentPage, setCurrentPage] = useState(1)
+    const [itemsPerPage] = useState(10) // Models per page
 
-  // Refresh model list when training completes
-  useEffect(() => {
-    if (progress?.status === 'done') {
-      // Wait a bit for file system to sync, then refresh
-      const timer = setTimeout(() => {
-        fetchAvailableModels()
-      }, 500)
-      return () => clearTimeout(timer)
-    }
-  }, [progress?.status])
+    // Load models from server
+    useEffect(() => {
+        loadModels()
+    }, [])
 
-  // Auto-select the most recent model when available
-  useEffect(() => {
-    if (availableModels.length > 0 && !selectedModel) {
-      setSelectedModel(availableModels[0])
-    }
-  }, [availableModels])
-
-  // Load model-specific metadata from training history
-  useEffect(() => {
-    const storedHistory = sessionStorage.getItem('trainingHistory')
-    if (storedHistory) {
-      try {
-        const history = JSON.parse(storedHistory)
-        const metadata = {}
-        history.forEach(h => {
-          if (h.modelPath && h.status === 'done') {
-            // Extract filename from modelPath for matching
-            const modelFilename = h.modelPath.split('/').pop().split('\\').pop()
-            // Store metadata indexed by filename for flexible matching
-            // Get final values from history arrays (last epoch)
-            const finalTrainLoss = h.lossHistory && h.lossHistory.length > 0 
-              ? h.lossHistory[h.lossHistory.length - 1] 
-              : (h.metrics?.loss || h.metrics?.trainLoss || 0)
-            const finalTrainAcc = h.accHistory && h.accHistory.length > 0
-              ? h.accHistory[h.accHistory.length - 1]
-              : (h.metrics?.trainAcc || h.metrics?.acc || 0)
-            const finalValAcc = h.valAccHistory && h.valAccHistory.length > 0
-              ? h.valAccHistory[h.valAccHistory.length - 1]
-              : (h.metrics?.valAcc || 0)
-            
-            metadata[modelFilename] = {
-              totalEpochs: h.currentEpoch || h.config?.epochs || 0,
-              trainLoss: finalTrainLoss,
-              trainAcc: finalTrainAcc,
-              valAcc: finalValAcc,
-              config: h.config
+    const loadModels = async () => {
+        try {
+            const response = await axios.get(`${API_URL}/list-models`)
+            if (response.data.models) {
+                setModels(response.data.models)
             }
-          }
-        })
-        setModelMetadata(metadata)
-      } catch (e) {
-        // Silently handle training history errors
-      }
-    }
-  }, [availableModels])
-
-  const fetchAvailableModels = async () => {
-    try {
-      setLoading(true)
-      const response = await axios.get('http://localhost:3001/api/list-models')
-      const models = response.data.models || []
-      // Force update by creating new array reference
-      setAvailableModels([...models])
-    } catch (error) {
-      // Silently handle 404 or server errors - just show empty list
-      setAvailableModels([])
-    } finally {
-      setLoading(false)
-    }
-  }
-
-  const formatModelName = (fileName) => {
-    // Extract date from filename if present (e.g., trained_model_20231120_143022.pth)
-    const match = fileName.match(/(\d{8}_\d{6})/)
-    if (match) {
-      const dateStr = match[1]
-      const year = dateStr.substring(0, 4)
-      const month = dateStr.substring(4, 6)
-      const day = dateStr.substring(6, 8)
-      const hour = dateStr.substring(9, 11)
-      const minute = dateStr.substring(11, 13)
-      const second = dateStr.substring(13, 15)
-      
-      const date = new Date(`${year}-${month}-${day}T${hour}:${minute}:${second}`)
-      const formattedDate = date.toLocaleDateString('en-US', { 
-        month: 'short', 
-        day: 'numeric', 
-        year: 'numeric',
-        hour: '2-digit',
-        minute: '2-digit'
-      })
-      
-      return `TrainedModel (${formattedDate}).pth`
-    }
-    
-    return fileName
-  }
-
-  const formatFileSize = (bytes) => {
-    if (bytes < 1024) return bytes + ' B'
-    if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(2) + ' KB'
-    return (bytes / (1024 * 1024)).toFixed(2) + ' MB'
-  }
-
-  const exportFormats = [
-    { id: 'pytorch', name: 'PyTorch (.pth)', description: 'Native PyTorch format - Best for Python inference' },
-    { id: 'onnx', name: 'ONNX (.onnx)', description: 'Open Neural Network Exchange - Universal cross-platform format' },
-    { id: 'torchscript', name: 'TorchScript (.pt)', description: 'Production-optimized PyTorch - C++ deployment ready' },
-    { id: 'coreml', name: 'CoreML (.mlmodel)', description: 'Apple CoreML - iOS and macOS native' },
-    { id: 'tflite', name: 'TensorFlow Lite (.tflite)', description: 'Mobile-optimized - Android and embedded devices' }
-  ]
-
-  const handleDownload = async () => {
-    if (!selectedModel) {
-      Swal.fire({ 
-        icon: 'warning', 
-        title: 'No Model Selected', 
-        text: 'Please select a model to export.', 
-        confirmButtonColor: '#3b82f6' 
-      })
-      return
-    }
-
-    const format = exportFormats.find(f => f.id === selectedFormat)
-    
-    setExporting(true)
-
-    try {
-      // Show loading message with conversion info
-      Swal.fire({
-        title: selectedFormat === 'pytorch' ? 'Preparing Download...' : `Converting to ${format.name}...`,
-        html: selectedFormat === 'pytorch' 
-          ? 'Please wait while we prepare your model file.'
-          : `Converting your PyTorch model to ${format.name} format. This may take a moment...`,
-        allowOutsideClick: false,
-        didOpen: () => {
-          Swal.showLoading()
+        } catch (error) {
+            console.error('Failed to load models:', error)
         }
-      })
-
-      // Get number of classes from dataset info
-      const numClasses = datasetInfo?.numClasses || datasetInfo?.structure?.classes?.length || 10
-
-      // Create download URL with conversion parameters (use relative path)
-      const downloadUrl = `http://localhost:3001/api/download-model?modelPath=${encodeURIComponent(selectedModel.path)}&format=${selectedFormat}&numClasses=${numClasses}`
-      
-      // Create a temporary anchor element to trigger download
-      const link = document.createElement('a')
-      link.href = downloadUrl
-      
-      // Set appropriate filename based on format
-      const baseFilename = selectedModel.name.replace('.pth', '')
-      const formatExtensions = {
-        'pytorch': '.pth',
-        'onnx': '.onnx',
-        'torchscript': '.pt',
-        'coreml': '.mlmodel',
-        'tflite': '.tflite'
-      }
-      const expectedExtension = formatExtensions[selectedFormat]
-      link.download = `${baseFilename}${expectedExtension}`
-      
-      document.body.appendChild(link)
-      link.click()
-      document.body.removeChild(link)
-
-      // Close loading and show success immediately
-      Swal.close()
-
-      // Immediately notify parent and refresh (don't wait for download to complete)
-      if (onModelExported) {
-        onModelExported(selectedModel.path, selectedFormat)
-      }
-      
-      // Refresh model list immediately (model will be deleted from server after download)
-      const response = await axios.get('http://localhost:3001/api/list-models')
-      const updatedModels = response.data.models || []
-      setAvailableModels(updatedModels)
-      
-      // Clear selected model
-      setSelectedModel(null)
-      
-      // If no models left, notify parent to reset state
-      if (updatedModels.length === 0 && onAllModelsCleared) {
-        onAllModelsCleared()
-      }
-
-      // Show success message in center
-      // Check if ONNX was provided instead of TFLite
-      const isTFLiteFallback = selectedFormat === 'tflite' && (downloadUrl.includes('.onnx') || link.download.endsWith('.onnx'))
-      
-      if (isTFLiteFallback) {
-        Swal.fire({
-          icon: 'info',
-          title: 'ONNX File Downloaded',
-          html: `
-            <div class="text-left">
-              <p class="mb-3">TFLite conversion has dependency conflicts on Windows.</p>
-              <p class="mb-3"><strong>ONNX file downloaded instead:</strong></p>
-              <ul class="list-disc list-inside mb-3 text-gray-700">
-                <li>Works directly with <strong>ONNX Runtime</strong> (all platforms)</li>
-                <li>Can be converted to TFLite using online tools if needed</li>
-                <li>Fully compatible with mobile and edge devices</li>
-              </ul>
-            </div>
-          `,
-          confirmButtonColor: '#3b82f6',
-          confirmButtonText: 'Got it',
-          width: 600
-        })
-      } else {
-        Swal.fire({
-          icon: 'success',
-          title: 'Download Started!',
-          text: `Your model in ${format.name} format is being downloaded.`,
-          confirmButtonColor: '#10b981',
-          timer: 2000,
-          timerProgressBar: true
-        })
-      }
-    } catch (error) {
-      // Try to get more details from the error response
-      let errorDetails = error.message || 'Failed to download model'
-      let installHint = ''
-      
-      // Check if this is a known platform limitation
-      if (errorDetails.includes('not supported on Windows') || errorDetails.includes('BlobWriter')) {
-        Swal.fire({
-          icon: 'warning',
-          title: 'CoreML Not Available',
-          html: `
-            <div class="text-left">
-              <p class="mb-3">CoreML conversion is not supported on Windows.</p>
-              <p class="mb-3"><strong>Recommended alternative:</strong></p>
-              <ul class="list-disc list-inside mb-3 text-gray-700">
-                <li>Export as <strong>ONNX format</strong> instead</li>
-                <li>ONNX works on all platforms (iOS, Android, Windows, macOS, Linux)</li>
-                <li>Can be converted to CoreML on macOS if needed</li>
-              </ul>
-            </div>
-          `,
-          confirmButtonColor: '#3b82f6',
-          confirmButtonText: 'Got it',
-          width: 600
-        })
-        return
-      }
-      
-      // Generic error handling
-      if (selectedFormat === 'onnx') {
-        installHint = '<br><br><b>Install required package:</b><br><code>pip install onnx</code>'
-      } else if (selectedFormat === 'torchscript') {
-        installHint = '<br><br><b>TorchScript uses built-in PyTorch - no extra packages needed</b>'
-      }
-      
-      Swal.fire({
-        icon: 'error',
-        title: 'Export Failed',
-        html: `
-          <div class="text-left">
-            <p class="mb-3 text-gray-700">${errorDetails}</p>
-            ${installHint}
-          </div>
-        `,
-        confirmButtonColor: '#ef4444',
-        width: 600
-      })
-    } finally {
-      setExporting(false)
     }
-  }
 
-  const getFormatIcon = (formatId) => {
-    const icons = {
-      pytorch: '🔥',
-      onnx: '🌐',
-      torchscript: '⚡',
-      coreml: '🍎',
-      tflite: '📱'
+    // Enrich models with data from trainingHistory if server metadata is missing
+    const enrichedModels = models.map(model => {
+        // Normalize fields from potential legacy server response
+        let normalizedModel = {
+            ...model,
+            id: model.id || model.name.replace('.pth', ''),
+            sizeBytes: model.sizeBytes || model.size || 0,
+            date: model.date || model.createdAt || model.modifiedAt || new Date().toISOString()
+        }
+
+        // Try to parse date from filename if current date is invalid or fallback
+        const dateMatch = normalizedModel.name.match(/TrainedModel-(\d{4}-\d{2}-\d{2}-\d{2}-\d{2}-\d{2})/)
+        if (dateMatch) {
+            const [y, m, d, h, min, s] = dateMatch[1].split('-')
+            const parsedDate = new Date(y, m - 1, d, h, min, s)
+            if (!isNaN(parsedDate.getTime())) {
+                normalizedModel.date = parsedDate.toISOString()
+            }
+        }
+
+        // If model has accuracy, use it
+        if (normalizedModel.accuracy != null) return normalizedModel
+
+        // Try to find matching history entry
+        // Match by filename (check if history path includes the model filename)
+        const historyItem = trainingHistory.find(h =>
+            h.modelPath && h.modelPath.includes(normalizedModel.name)
+        )
+
+        let enriched = { ...normalizedModel }
+
+        if (historyItem) {
+            enriched.sessionId = historyItem.id
+
+            if (historyItem.metrics) {
+                enriched.accuracy = historyItem.metrics.valAcc || historyItem.metrics.accuracy
+                enriched.metrics = {
+                    ...normalizedModel.metrics,
+                    trainAcc: historyItem.metrics.trainAcc,
+                    valAcc: historyItem.metrics.valAcc || historyItem.metrics.accuracy,
+                    trainLoss: historyItem.metrics.trainLoss,
+                    valLoss: historyItem.metrics.valLoss
+                }
+            }
+        }
+
+        return enriched
+    })
+
+    // Filter and sort models
+    const filteredModels = enrichedModels
+        .filter(model =>
+            model.name.toLowerCase().includes(searchQuery.toLowerCase())
+        )
+        .sort((a, b) => {
+            let comparison = 0
+            switch (sortBy) {
+                case 'name':
+                    comparison = a.name.localeCompare(b.name)
+                    break
+                case 'accuracy':
+                    comparison = (a.accuracy || 0) - (b.accuracy || 0)
+                    break
+                case 'size':
+                    comparison = (a.sizeBytes || 0) - (b.sizeBytes || 0)
+                    break
+                case 'date':
+                default:
+                    comparison = new Date(a.date) - new Date(b.date)
+            }
+            return sortOrder === 'asc' ? comparison : -comparison
+        })
+
+    // Pagination calculations
+    const totalPages = Math.ceil(filteredModels.length / itemsPerPage)
+    const startIndex = (currentPage - 1) * itemsPerPage
+    const endIndex = startIndex + itemsPerPage
+    const paginatedModels = filteredModels.slice(startIndex, endIndex)
+
+    // Check if all visible models are selected
+    const isAllSelected = paginatedModels.length > 0 && paginatedModels.every(m => selectedModels.includes(m.id))
+
+    // Reset to first page when filters change
+    useEffect(() => {
+        setCurrentPage(1)
+    }, [searchQuery, sortBy, sortOrder])
+
+    const handlePageChange = (page) => {
+        if (page >= 1 && page <= totalPages) {
+            setCurrentPage(page)
+        }
     }
-    return icons[formatId] || '📦'
-  }
 
-  const getFormatColor = (formatId) => {
-    const colors = {
-      pytorch: 'from-orange-500 to-red-600',
-      onnx: 'from-blue-500 to-cyan-600',
-      torchscript: 'from-yellow-500 to-orange-600',
-      coreml: 'from-gray-700 to-gray-900',
-      tflite: 'from-green-500 to-emerald-600'
+    const handleToggleSelect = (id) => {
+        if (selectedModels.includes(id)) {
+            setSelectedModels(selectedModels.filter(m => m !== id))
+        } else {
+            setSelectedModels([...selectedModels, id])
+        }
     }
-    return colors[formatId] || 'from-gray-500 to-gray-700'
-  }
 
-  // Get current model's metadata by matching filename
-  const currentMetadata = selectedModel 
-    ? (modelMetadata[selectedModel.name] || modelMetadata[selectedModel.path] || {}) 
-    : {}
+    const handleSelectAll = () => {
+        if (isAllSelected) {
+            // Deselect all on current page
+            const pageIds = paginatedModels.map(m => m.id)
+            setSelectedModels(selectedModels.filter(id => !pageIds.includes(id)))
+        } else {
+            // Select all on current page
+            const pageIds = paginatedModels.map(m => m.id)
+            // Add IDs that aren't already selected
+            const newIds = pageIds.filter(id => !selectedModels.includes(id))
+            setSelectedModels([...selectedModels, ...newIds])
+        }
+    }
 
-  return (
-    <div className="bg-gradient-to-br from-gray-50 to-gray-100 min-h-screen -m-6 p-6">
-      {/* Hero Header */}
-      <div className="bg-gradient-to-r from-indigo-600 via-purple-600 to-pink-600 rounded-2xl shadow-2xl p-8 mb-6 text-white overflow-hidden relative">
-        <div className="absolute inset-0 bg-black opacity-10"></div>
-        <div className="relative z-10">
-          <div className="flex items-center justify-between">
-            <div>
-              <h1 className="text-4xl font-extrabold mb-2 flex items-center gap-3">
-                <span className="text-5xl">🚀</span>
-                Model Export Center
-              </h1>
-              <p className="text-indigo-100 text-lg">
-                Convert and download your trained models in multiple formats
-              </p>
-            </div>
-            <div className="hidden md:block text-8xl opacity-20">📦</div>
-          </div>
-          
-          {/* Quick Stats Bar */}
-          <div className="mt-6 grid grid-cols-2 md:grid-cols-4 gap-4">
-            <div className="bg-white/10 backdrop-blur-sm rounded-xl p-4 border border-white/20">
-              <div className="text-white/80 text-xs font-medium mb-1">Available Models</div>
-              <div className="text-3xl font-bold">{availableModels.length}</div>
-            </div>
-            <div className="bg-white/10 backdrop-blur-sm rounded-xl p-4 border border-white/20">
-              <div className="text-white/80 text-xs font-medium mb-1">Selected Format</div>
-              <div className="text-2xl font-bold flex items-center gap-2">
-                <span>{getFormatIcon(selectedFormat)}</span>
-                {selectedFormat.toUpperCase()}
-              </div>
-            </div>
-            <div className="bg-white/10 backdrop-blur-sm rounded-xl p-4 border border-white/20">
-              <div className="text-white/80 text-xs font-medium mb-1">Model Classes</div>
-              <div className="text-3xl font-bold">{datasetInfo?.numClasses || '-'}</div>
-            </div>
-            <div className="bg-white/10 backdrop-blur-sm rounded-xl p-4 border border-white/20">
-              <div className="text-white/80 text-xs font-medium mb-1">Status</div>
-              <div className="text-2xl font-bold">{selectedModel ? '✅ Ready' : '⏳ Select'}</div>
-            </div>
-          </div>
-        </div>
-      </div>
+    const handleExport = async () => {
+        if (selectedModels.length === 0) return
 
-      {/* Main Content */}
-      <div className="grid grid-cols-1 xl:grid-cols-3 gap-6">
-        {/* Left Section - Model Selection */}
-        <div className="xl:col-span-2 space-y-6">
-          {/* Available Models */}
-          <div className="bg-white rounded-2xl shadow-xl overflow-hidden border border-gray-200">
-            <div className="bg-gradient-to-r from-blue-600 to-indigo-700 p-5 flex items-center justify-between">
-              <div className="flex items-center gap-3">
-                <span className="text-3xl">📦</span>
-                <div>
-                  <h2 className="text-xl font-bold text-white">Your Trained Models</h2>
-                  <p className="text-blue-100 text-sm">Select a model to export</p>
+        if (exportFormat === 'tflite' || exportFormat === 'coreml') {
+            await Swal.fire({
+                icon: 'info',
+                title: 'Work in Progress',
+                text: `${exportFormat === 'tflite' ? 'TFLite' : 'CoreML'} export is currently being optimized and will be available soon.`,
+                confirmButtonText: 'Got it',
+                customClass: {
+                    popup: 'rounded-2xl shadow-xl border border-gray-100',
+                    confirmButton: 'px-6 py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl font-medium transition-all shadow-sm'
+                },
+                buttonsStyling: false
+            })
+            return
+        }
+
+        const selectedModelData = models.filter(m => selectedModels.includes(m.id))
+
+        const result = await Swal.fire({
+            title: 'Export Models',
+            html: `
+                <div style="text-align: left; padding: 0.5rem;">
+                    <p style="margin-bottom: 0.75rem; color: #666; font-size: 0.95rem;">Export ${selectedModels.length} model(s) as <strong>${exportFormat.toUpperCase()}</strong>?</p>
+                    <div style="background: #f9fafb; padding: 0.5rem; border-radius: 8px; font-size: 0.85rem; max-height: 120px; overflow-y: auto;">
+                        ${selectedModelData.map(m => `<div style="padding: 0.2rem 0; color: #555;">📦 ${m.name}</div>`).join('')}
+                    </div>
                 </div>
-              </div>
-              <button
-                onClick={fetchAvailableModels}
-                className="px-4 py-2 bg-white/20 hover:bg-white/30 rounded-lg transition-all text-white font-medium flex items-center gap-2 border border-white/30"
-                title="Refresh model list"
-              >
-                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
-                </svg>
-                Refresh
-              </button>
-            </div>
-            
-            <div className="p-6">
-              {loading ? (
-                <div className="text-center py-16">
-                  <div className="inline-block animate-spin text-6xl mb-4">⚙️</div>
-                  <p className="text-gray-600 font-medium text-lg">Loading your models...</p>
-                </div>
-              ) : availableModels.length === 0 ? (
-                <div className="text-center py-16 bg-gradient-to-br from-gray-50 to-gray-100 rounded-xl border-2 border-dashed border-gray-300">
-                  <div className="text-8xl mb-4">🎯</div>
-                  <p className="text-gray-700 font-bold text-xl mb-2">No Models Available</p>
-                  <p className="text-gray-500">Train a model first to see it here</p>
-                </div>
-              ) : (
-                <div className="grid grid-cols-1 gap-2 max-h-[400px] overflow-y-auto overflow-x-hidden">
-                  {availableModels.map((model) => (
-                    <div
-                      key={model.path}
-                      onClick={() => setSelectedModel(model)}
-                      className={`group relative p-3 rounded-lg cursor-pointer transition-all duration-200 border ${
-                        selectedModel?.path === model.path
-                          ? 'border-blue-500 bg-blue-50 shadow-md'
-                          : 'border-gray-200 bg-white hover:border-blue-300 hover:shadow-sm'
-                      }`}
-                    >
-                      <div className="flex items-center gap-3 overflow-hidden">
-                        <div className="flex-1 min-w-0">
-                          <p className="font-semibold text-sm text-gray-800 truncate">
-                            {formatModelName(model.name)}
-                          </p>
-                          <div className="flex items-center gap-3 text-xs text-gray-500 mt-1 flex-wrap">
-                            <span className="flex items-center gap-1 whitespace-nowrap">
-                              <svg className="w-3 h-3 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 21h10a2 2 0 002-2V9.414a1 1 0 00-.293-.707l-5.414-5.414A1 1 0 0012.586 3H7a2 2 0 00-2 2v14a2 2 0 002 2z" />
-                              </svg>
-                              {formatFileSize(model.size)}
-                            </span>
-                            <span className="flex items-center gap-1 whitespace-nowrap">
-                              <svg className="w-3 h-3 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
-                              </svg>
-                              {new Date(model.createdAt).toLocaleString()}
-                            </span>
-                          </div>
+            `,
+            icon: 'question',
+            showCancelButton: true,
+            confirmButtonText: 'Export Now',
+            cancelButtonText: 'Cancel',
+            customClass: {
+                popup: 'rounded-2xl shadow-2xl border border-gray-100',
+                title: 'text-lg font-bold text-gray-900',
+                htmlContainer: 'text-sm',
+                actions: 'gap-3 mt-4',
+                confirmButton: 'px-6 py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl font-medium transition-all shadow-sm transform active:scale-95',
+                cancelButton: 'px-6 py-2.5 bg-gray-100 hover:bg-gray-200 text-gray-700 rounded-xl font-medium transition-all shadow-sm transform active:scale-95'
+            },
+            buttonsStyling: false
+        })
+
+        if (result.isConfirmed) {
+            try {
+                Swal.fire({
+                    title: 'Exporting...',
+                    html: 'Please wait while we prepare your models',
+                    allowOutsideClick: false,
+                    customClass: {
+                        popup: 'rounded-2xl shadow-xl border border-gray-100'
+                    },
+                    didOpen: () => {
+                        Swal.showLoading()
+                    }
+                })
+
+                // Call the download API for each selected model
+                for (const model of selectedModelData) {
+                    try {
+                        const downloadUrl = `${API_URL}/download-model?modelPath=${encodeURIComponent(model.path)}&format=${exportFormat}`
+
+                        // Fetch the file as array buffer
+                        const response = await fetch(downloadUrl)
+                        if (!response.ok) {
+                            throw new Error(`Download failed: ${response.statusText}`)
+                        }
+
+                        // Get the array buffer
+                        const arrayBuffer = await response.arrayBuffer()
+
+                        // Determine file extension and MIME type
+                        let fileExt, mimeType = 'application/octet-stream';
+                        switch (exportFormat) {
+                            case 'pytorch':
+                                fileExt = 'pth';
+                                break;
+                            case 'onnx':
+                                fileExt = 'onnx';
+                                break;
+                            case 'torchscript':
+                                fileExt = 'pt';
+                                break;
+                            case 'tflite':
+                                fileExt = 'tflite';
+                                break;
+                            case 'coreml':
+                                fileExt = 'mlmodel';
+                                break;
+                            default:
+                                fileExt = exportFormat;
+                        }
+
+                        // Create blob with proper type
+                        const blob = new Blob([arrayBuffer], { type: mimeType })
+
+                        // Create download link
+                        const url = window.URL.createObjectURL(blob)
+                        const link = document.createElement('a')
+                        link.href = url
+                        link.download = model.name.replace('.pth', `.${fileExt}`)
+                        link.style.display = 'none'
+                        document.body.appendChild(link)
+                        link.click()
+
+                        // Cleanup
+                        setTimeout(() => {
+                            document.body.removeChild(link)
+                            window.URL.revokeObjectURL(url)
+                        }, 100)
+
+                        // Small delay between downloads
+                        await new Promise(resolve => setTimeout(resolve, 500))
+                    } catch (downloadError) {
+                        console.error('Download error:', downloadError)
+                        throw downloadError
+                    }
+                }
+
+                const exportRecord = {
+                    id: Date.now(),
+                    date: new Date().toISOString(),
+                    models: selectedModelData.map(m => m.name),
+                    format: exportFormat,
+                    count: selectedModels.length
+                }
+                setExportHistory(prev => [exportRecord, ...prev])
+
+                Swal.fire({
+                    icon: 'success',
+                    title: 'Export Complete!',
+                    html: `
+                        <div style="text-align: center; padding: 0.5rem;">
+                            <p style="color: #10b981; font-size: 1rem; margin: 0.5rem 0; font-weight: 600;">✓ ${selectedModels.length} model(s) downloaded successfully</p>
+                            <p style="color: #666; font-size: 0.85rem;">Format: ${exportFormat.toUpperCase()}</p>
                         </div>
-                        {selectedModel?.path === model.path && (
-                          <div className="flex-shrink-0">
-                            <span className="bg-blue-500 text-white text-xs font-bold px-2 py-1 rounded whitespace-nowrap">
-                              SELECTED
-                            </span>
-                          </div>
-                        )}
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-          </div>
+                    `,
+                    timer: 2500,
+                    showConfirmButton: false,
+                    customClass: {
+                        popup: 'rounded-2xl shadow-xl border border-gray-100'
+                    }
+                }).then(() => {
+                    // Reload page after modal closes
+                    window.location.reload()
+                })
 
-          {/* Export Action Card */}
-          <div className="bg-white rounded-2xl shadow-xl overflow-hidden border border-gray-200">
-            <div className="bg-gradient-to-r from-green-600 to-emerald-700 p-5">
-              <div className="flex items-center gap-3">
-                <span className="text-3xl">📥</span>
+                setSelectedModels([])
+
+                if (onModelExported) {
+                    selectedModelData.forEach(m => onModelExported(m.path, exportFormat))
+                }
+            } catch (error) {
+                Swal.fire({
+                    icon: 'error',
+                    title: 'Export Failed',
+                    text: error.message || 'An error occurred during export',
+                    customClass: {
+                        popup: 'rounded-2xl shadow-xl border border-gray-100',
+                        confirmButton: 'px-6 py-2.5 bg-red-500 hover:bg-red-600 text-white rounded-xl font-medium transition-all shadow-sm'
+                    },
+                    buttonsStyling: false
+                })
+            }
+        }
+    }
+
+
+    const handleDeleteModel = async (model) => {
+        const result = await Swal.fire({
+            title: 'Delete Model?',
+            text: `Are you sure you want to delete "${model.name}"?`,
+            icon: 'warning',
+            showCancelButton: true,
+            confirmButtonText: 'Delete',
+            cancelButtonText: 'Cancel',
+            customClass: {
+                popup: 'rounded-2xl shadow-2xl border border-gray-100',
+                title: 'text-xl font-bold text-gray-900',
+                htmlContainer: 'text-gray-600 mt-2',
+                actions: 'gap-3 mt-6',
+                confirmButton: 'px-6 py-2.5 bg-red-500 hover:bg-red-600 text-white rounded-xl font-medium transition-all shadow-sm transform active:scale-95',
+                cancelButton: 'px-6 py-2.5 bg-gray-100 hover:bg-gray-200 text-gray-700 rounded-xl font-medium transition-all shadow-sm transform active:scale-95'
+            },
+            buttonsStyling: false
+        })
+
+        if (result.isConfirmed) {
+            try {
+                await axios.delete(`${API_URL}/delete-model/${model.id}`)
+
+                setModels(prev => prev.filter(m => m.id !== model.id))
+                setSelectedModels(prev => prev.filter(id => id !== model.id))
+
+                Swal.fire({
+                    icon: 'success',
+                    title: 'Deleted',
+                    text: 'Model deleted successfully',
+                    timer: 2000,
+                    showConfirmButton: false,
+                    customClass: {
+                        popup: 'rounded-2xl shadow-xl border border-gray-100'
+                    }
+                })
+
+                if (models.length === 1 && onAllModelsCleared) {
+                    onAllModelsCleared()
+                }
+            } catch (error) {
+                // If model not found (404), assume it's already deleted and remove from UI
+                if (error.response && error.response.status === 404) {
+                    setModels(prev => prev.filter(m => m.id !== model.id))
+                    setSelectedModels(prev => prev.filter(id => id !== model.id))
+
+                    Swal.fire({
+                        icon: 'warning',
+                        title: 'Model Not Found',
+                        text: 'The model file was not found on the server but has been removed from your list.',
+                        timer: 3000,
+                        showConfirmButton: false,
+                        customClass: {
+                            popup: 'rounded-2xl shadow-xl border border-gray-100'
+                        }
+                    })
+                    return
+                }
+
+                Swal.fire({
+                    icon: 'error',
+                    title: 'Delete Failed',
+                    text: error.message || 'Failed to delete model',
+                    confirmButtonColor: '#ef4444',
+                    customClass: {
+                        popup: 'rounded-2xl shadow-xl border border-gray-100'
+                    }
+                })
+            }
+        }
+    }
+
+    const handleClearAll = async () => {
+        const result = await Swal.fire({
+            title: 'Clear All Models?',
+            text: `This will permanently delete all ${models.length} trained models.`,
+            icon: 'warning',
+            showCancelButton: true,
+            confirmButtonText: 'Clear All',
+            cancelButtonText: 'Cancel',
+            customClass: {
+                popup: 'rounded-2xl shadow-2xl border border-gray-100',
+                title: 'text-xl font-bold text-gray-900',
+                htmlContainer: 'text-gray-600 mt-2',
+                actions: 'gap-3 mt-6',
+                confirmButton: 'px-6 py-2.5 bg-red-500 hover:bg-red-600 text-white rounded-xl font-medium transition-all shadow-sm transform active:scale-95',
+                cancelButton: 'px-6 py-2.5 bg-gray-100 hover:bg-gray-200 text-gray-700 rounded-xl font-medium transition-all shadow-sm transform active:scale-95'
+            },
+            buttonsStyling: false
+        })
+
+        if (result.isConfirmed) {
+            try {
+                await axios.post(`${API_URL}/clear-all-models`)
+                setModels([])
+                setSelectedModels([])
+
+                Swal.fire({
+                    icon: 'success',
+                    title: 'All Models Cleared',
+                    timer: 2000,
+                    showConfirmButton: false,
+                    customClass: {
+                        popup: 'rounded-2xl shadow-xl border border-gray-100'
+                    }
+                })
+
+                if (onAllModelsCleared) {
+                    onAllModelsCleared()
+                }
+            } catch (error) {
+                Swal.fire({
+                    icon: 'error',
+                    title: 'Clear Failed',
+                    text: error.message || 'Failed to clear models',
+                    confirmButtonColor: '#ef4444',
+                    customClass: {
+                        popup: 'rounded-2xl shadow-xl border border-gray-100'
+                    }
+                })
+            }
+        }
+    }
+
+    const handleViewDetails = (model) => {
+        setSelectedModel(model)
+    }
+
+    const formatBytes = (bytes) => {
+        if (bytes === 0) return '0 Bytes'
+        if (!bytes) return 'N/A'
+        const sizes = ['Bytes', 'KB', 'MB', 'GB']
+        const i = Math.floor(Math.log(bytes) / Math.log(1024))
+        return `${(bytes / Math.pow(1024, i)).toFixed(2)} ${sizes[i]}`
+    }
+
+    return (
+        <div className="flex flex-col h-full animate-fade-in gap-4">
+            {/* Header */}
+            <div className="flex-shrink-0 flex items-center justify-between">
                 <div>
-                  <h2 className="text-xl font-bold text-white">Export & Download</h2>
-                  <p className="text-green-100 text-sm">Choose format and download your model</p>
+                    <h2 className="text-2xl font-semibold">Model Export</h2>
+                    <p className="text-sm text-muted mt-1">Manage and export trained models</p>
                 </div>
-              </div>
-            </div>
-            
-            <div className="p-6">
-              <div className="space-y-4">
-                {/* Format Selection Dropdown */}
-                <div>
-                  <label className="block text-sm font-bold text-gray-700 mb-2">
-                    Export Format
-                  </label>
-                  <div className="relative">
+                <div className="flex items-center gap-3">
                     <select
-                      value={selectedFormat}
-                      onChange={(e) => setSelectedFormat(e.target.value)}
-                      disabled={!selectedModel}
-                      className="w-full px-4 py-3 pr-10 border-2 border-gray-300 rounded-xl focus:border-green-500 focus:ring-4 focus:ring-green-200 outline-none transition-all bg-white text-gray-800 font-medium appearance-none disabled:bg-gray-100 disabled:cursor-not-allowed"
+                        value={exportFormat}
+                        onChange={(e) => setExportFormat(e.target.value)}
+                        className="select text-sm py-2 w-44"
                     >
-                      {exportFormats.map((fmt) => (
-                        <option key={fmt.id} value={fmt.id}>
-                          {getFormatIcon(fmt.id)} {fmt.name}
-                        </option>
-                      ))}
+                        <option value="pytorch">PyTorch (.pth)</option>
+                        <option value="onnx">ONNX (.onnx)</option>
+                        <option value="torchscript">TorchScript (.pt)</option>
+                        <option value="tflite">TFLite (.tflite)</option>
+                        <option value="coreml">CoreML (.mlmodel)</option>
                     </select>
-                    <div className="absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none">
-                      <svg className="w-5 h-5 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
-                      </svg>
+                    <button
+                        onClick={handleExport}
+                        disabled={selectedModels.length === 0}
+                        className="btn btn-primary py-2 px-4 text-sm"
+                    >
+                        Export ({selectedModels.length})
+                    </button>
+                </div>
+            </div>
+
+            {/* Toolbar */}
+            <div className="flex-shrink-0 card p-4">
+                <div className="flex items-center justify-between gap-4">
+                    {/* Left Section - Search and Sort */}
+                    <div className="flex items-center gap-4 flex-1 min-w-0">
+                        {/* Search */}
+                        <div className="relative flex-1 max-w-md">
+                            <svg className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted pointer-events-none" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+                            </svg>
+                            <input
+                                type="text"
+                                placeholder="Search models..."
+                                value={searchQuery}
+                                onChange={(e) => setSearchQuery(e.target.value)}
+                                className="input text-sm w-full py-2"
+                                style={{ paddingLeft: '2.5rem' }}
+                            />
+                        </div>
+
+                        {/* Sort */}
+                        <select
+                            value={sortBy}
+                            onChange={(e) => setSortBy(e.target.value)}
+                            className="select text-sm py-2 w-36"
+                        >
+                            <option value="date">Date</option>
+                            <option value="name">Name</option>
+                            <option value="accuracy">Accuracy</option>
+                            <option value="size">Size</option>
+                        </select>
+
+                        <button
+                            onClick={() => setSortOrder(sortOrder === 'asc' ? 'desc' : 'asc')}
+                            className="btn-icon flex-shrink-0 p-2"
+                            title={sortOrder === 'asc' ? 'Ascending' : 'Descending'}
+                        >
+                            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                {sortOrder === 'asc' ? (
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 4h13M3 8h9m-9 4h6m4 0l4-4m0 0l4 4m-4-4v12" />
+                                ) : (
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 4h13M3 8h9m-9 4h9m5-4v12m0 0l-4-4m4 4l4-4" />
+                                )}
+                            </svg>
+                        </button>
                     </div>
-                  </div>
-                </div>
 
-                {/* Format Description */}
-                <div className="bg-blue-50 border-l-4 border-blue-500 p-4 rounded-lg">
-                  <p className="text-sm text-gray-700 flex items-start gap-2">
-                    <span className="text-xl">{getFormatIcon(selectedFormat)}</span>
-                    <span>{exportFormats.find(f => f.id === selectedFormat)?.description}</span>
-                  </p>
-                </div>
+                    {/* Right Section - View Mode and Stats */}
+                    <div className="flex items-center gap-4 flex-shrink-0">
+                        {/* View Mode Toggle */}
+                        <div className="flex items-center gap-1 bg-gray-100 rounded-md p-1">
+                            <button
+                                onClick={() => setViewMode('table')}
+                                className={`p-2 rounded ${viewMode === 'table' ? 'bg-white shadow-sm' : 'text-muted'}`}
+                                title="Table view"
+                            >
+                                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 10h18M3 14h18m-9-4v8m-7 0h14a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" />
+                                </svg>
+                            </button>
+                            <button
+                                onClick={() => setViewMode('grid')}
+                                className={`p-2 rounded ${viewMode === 'grid' ? 'bg-white shadow-sm' : 'text-muted'}`}
+                                title="Grid view"
+                            >
+                                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2V6zM14 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2V6zM4 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2v-2zM14 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2v-2z" />
+                                </svg>
+                            </button>
+                        </div>
 
-                {/* Download Button */}
-                <button
-                  onClick={handleDownload}
-                  disabled={!selectedModel || exporting}
-                  className={`w-full py-4 px-6 rounded-xl font-bold text-lg transition-all duration-300 flex items-center justify-center gap-3 ${
-                    !selectedModel || exporting
-                      ? 'bg-gray-300 text-gray-500 cursor-not-allowed'
-                      : 'bg-gradient-to-r from-green-600 to-emerald-600 text-white hover:from-green-700 hover:to-emerald-700 shadow-lg hover:shadow-xl transform hover:scale-[1.02]'
-                  }`}
-                >
-                  {exporting ? (
-                    <>
-                      <svg className="animate-spin h-6 w-6" viewBox="0 0 24 24">
-                        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none"/>
-                        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"/>
-                      </svg>
-                      Preparing Download...
-                    </>
-                  ) : (
-                    <>
-                      <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
-                      </svg>
-                      Download Model
-                    </>
-                  )}
-                </button>
-              </div>
+                        {/* Stats */}
+                        <div className="text-sm text-muted px-4 border-l">
+                            {filteredModels.length} of {models.length} models
+                        </div>
+                    </div>
+                </div>
             </div>
-          </div>
-        </div>
 
-        {/* Right Section - Summary */}
-        <div className="space-y-6">
-          {/* Training Metrics Summary */}
-          <div className="bg-white rounded-2xl shadow-xl overflow-hidden border border-gray-200">
-            <div className="bg-gradient-to-r from-indigo-600 to-purple-600 p-4">
-              <div className="flex items-center gap-2">
-                <span className="text-2xl">📊</span>
-                <h3 className="text-lg font-bold text-white">Model Summary</h3>
-              </div>
+            {/* Main Content */}
+            <div className="flex-1 card min-h-0 flex flex-col p-0 overflow-hidden">
+                <div className="p-4 border-b bg-gray-50 flex justify-between items-center">
+                    <h3 className="text-base font-semibold">Available Models</h3>
+                    {models.length > 0 && (
+                        <button
+                            onClick={handleClearAll}
+                            className="text-sm text-red-500 hover:text-red-600 font-medium transition-colors"
+                        >
+                            Clear All
+                        </button>
+                    )}
+                </div>
+
+                <div className="flex-1 overflow-y-auto custom-scrollbar">
+                    {viewMode === 'table' ? (
+                        <table className="w-full text-left text-sm">
+                            <thead className="bg-white sticky top-0 z-10 border-b shadow-sm">
+                                <tr>
+                                    <th className="p-4 w-12">
+                                        <input
+                                            type="checkbox"
+                                            className="rounded border-gray-300 cursor-pointer"
+                                            checked={isAllSelected}
+                                            onChange={handleSelectAll}
+                                            title="Select all"
+                                        />
+                                    </th>
+                                    <th className="p-4 font-medium text-muted">Model Name</th>
+                                    <th className="p-4 font-medium text-muted">Accuracy (Train / Val)</th>
+                                    <th className="p-4 font-medium text-muted">Size</th>
+                                    <th className="p-4 font-medium text-muted">Date</th>
+                                    <th className="p-4 font-medium text-muted text-right">Actions</th>
+                                </tr>
+                            </thead>
+                            <tbody className="divide-y divide-gray-100">
+                                {paginatedModels.length > 0 ? paginatedModels.map(model => (
+                                    <tr key={model.id} className="hover:bg-gray-50 transition-colors animate-fade-in">
+                                        <td className="p-4">
+                                            <input
+                                                type="checkbox"
+                                                checked={selectedModels.includes(model.id)}
+                                                onChange={() => handleToggleSelect(model.id)}
+                                                className="rounded border-gray-300 cursor-pointer"
+                                            />
+                                        </td>
+                                        <td className="p-3">
+                                            <div className="flex items-center gap-2">
+                                                <svg className="w-4 h-4 text-muted" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                                                </svg>
+                                                <span className="font-medium">{model.name}</span>
+                                            </div>
+                                        </td>
+                                        <td className="p-3">
+                                            {model.metrics ? (
+                                                <div className="flex items-center gap-3 text-sm">
+                                                    <span className="text-blue-600 font-medium" title="Training Accuracy">
+                                                        {(model.metrics.trainAcc * 100).toFixed(1)}%
+                                                    </span>
+                                                    <span className="text-gray-300">|</span>
+                                                    <span className="text-green-600 font-medium" title="Validation Accuracy">
+                                                        {(model.metrics.valAcc * 100).toFixed(1)}%
+                                                    </span>
+                                                </div>
+                                            ) : model.accuracy ? (
+                                                <span className="text-green-600 font-medium text-sm">
+                                                    {(model.accuracy * 100).toFixed(1)}%
+                                                </span>
+                                            ) : (
+                                                <span className="text-muted text-sm">N/A</span>
+                                            )}
+                                        </td>
+                                        <td className="p-4 text-muted text-sm">{formatBytes(model.sizeBytes)}</td>
+                                        <td className="p-4 text-muted text-sm">{new Date(model.date).toLocaleDateString()}</td>
+                                        <td className="p-4">
+                                            <div className="flex items-center justify-end gap-2">
+                                                <button
+                                                    onClick={() => handleViewDetails(model)}
+                                                    className="p-2 text-blue-500 hover:bg-blue-50 rounded transition-colors"
+                                                    title="View details"
+                                                >
+                                                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
+                                                    </svg>
+                                                </button>
+                                                <button
+                                                    onClick={() => handleDeleteModel(model)}
+                                                    className="p-2 text-red-500 hover:bg-red-50 rounded transition-colors"
+                                                    title="Delete model"
+                                                >
+                                                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                                                    </svg>
+                                                </button>
+                                            </div>
+                                        </td>
+                                    </tr>
+                                )) : (
+                                    <tr>
+                                        <td colSpan="6" className="p-12 text-center text-muted">
+                                            <svg className="w-12 h-12 mx-auto mb-3 opacity-20" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M20 13V6a2 2 0 00-2-2H6a2 2 0 00-2 2v7m16 0v5a2 2 0 01-2 2H6a2 2 0 01-2-2v-5m16 0h-2.586a1 1 0 00-.707.293l-2.414 2.414a1 1 0 01-.707.293h-3.172a1 1 0 01-.707-.293l-2.414-2.414A1 1 0 006.586 13H4" />
+                                            </svg>
+                                            <p className="font-medium">No models available</p>
+                                            <p className="text-[10px] mt-1">
+                                                {searchQuery ? 'Try a different search term' : 'Train a model to see it here'}
+                                            </p>
+                                        </td>
+                                    </tr>
+                                )}
+                            </tbody>
+                        </table>
+                    ) : (
+                        <div className="p-4 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                            {paginatedModels.length > 0 ? paginatedModels.map(model => (
+                                <div key={model.id} className="card p-4 hover:shadow-md transition-all animate-fade-in cursor-pointer" onClick={() => handleViewDetails(model)}>
+                                    <div className="flex items-start justify-between mb-2">
+                                        <input
+                                            type="checkbox"
+                                            checked={selectedModels.includes(model.id)}
+                                            onChange={(e) => {
+                                                e.stopPropagation()
+                                                handleToggleSelect(model.id)
+                                            }}
+                                            className="rounded border-gray-300 cursor-pointer"
+                                            onClick={(e) => e.stopPropagation()}
+                                        />
+                                        <button
+                                            onClick={(e) => {
+                                                e.stopPropagation()
+                                                handleDeleteModel(model)
+                                            }}
+                                            className="p-1.5 text-red-500 hover:bg-red-50 rounded transition-colors"
+                                        >
+                                            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                                            </svg>
+                                        </button>
+                                    </div>
+                                    <div className="flex items-center gap-2 mb-2">
+                                        <svg className="w-5 h-5 text-muted flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                                        </svg>
+                                        <span className="font-medium text-sm truncate">{model.name}</span>
+                                    </div>
+                                    <div className="flex items-center justify-between text-sm text-muted mt-3 pt-3 border-t">
+                                        <div>
+                                            {model.accuracy ? (
+                                                <span className="px-2 py-0.5 rounded-full bg-green-50 text-green-700 border border-green-200 text-[10px] font-medium">
+                                                    {(model.accuracy * 100).toFixed(1)}%
+                                                </span>
+                                            ) : (
+                                                <span>N/A</span>
+                                            )}
+                                        </div>
+                                        <div>{formatBytes(model.sizeBytes)}</div>
+                                    </div>
+                                    <div className="text-xs text-muted mt-1">
+                                        {new Date(model.date).toLocaleDateString()}
+                                    </div>
+                                </div>
+                            )) : (
+                                <div className="col-span-full p-12 text-center text-muted">
+                                    <svg className="w-12 h-12 mx-auto mb-3 opacity-20" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M20 13V6a2 2 0 00-2-2H6a2 2 0 00-2 2v7m16 0v5a2 2 0 01-2 2H6a2 2 0 01-2-2v-5m16 0h-2.586a1 1 0 00-.707.293l-2.414 2.414a1 1 0 01-.707.293h-3.172a1 1 0 01-.707-.293l-2.414-2.414A1 1 0 006.586 13H4" />
+                                    </svg>
+                                    <p className="font-medium">No models available</p>
+                                    <p className="text-[10px] mt-1">
+                                        {searchQuery ? 'Try a different search term' : 'Train a model to see it here'}
+                                    </p>
+                                </div>
+                            )}
+                        </div>
+                    )}
+                </div>
+
+                {/* Pagination */}
+                <Pagination
+                    currentPage={currentPage}
+                    totalPages={totalPages}
+                    totalItems={filteredModels.length}
+                    itemsPerPage={itemsPerPage}
+                    onPageChange={handlePageChange}
+                />
             </div>
-            {selectedModel ? (
-              <div className="p-4 space-y-3">
-                <div className="bg-gradient-to-r from-blue-50 to-indigo-50 p-4 rounded-xl border border-blue-200">
-                  <div className="flex justify-between items-center">
-                    <span className="text-sm font-medium text-gray-700">Total Epochs</span>
-                    <span className="text-2xl font-bold text-indigo-600">{currentMetadata.totalEpochs || 0}</span>
-                  </div>
+
+            {/* Model Details Modal */}
+            {selectedModel && (
+                <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 animate-fade-in" onClick={() => setSelectedModel(null)}>
+                    <div className="bg-white rounded-lg shadow-lg max-w-2xl w-full mx-4 max-h-[80vh] overflow-hidden" onClick={(e) => e.stopPropagation()}>
+                        <div className="p-4 border-b flex items-center justify-between bg-gray-50">
+                            <h3 className="font-semibold text-lg">Model Details</h3>
+                            <button onClick={() => setSelectedModel(null)} className="btn-icon">
+                                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                                </svg>
+                            </button>
+                        </div>
+                        <div className="p-6 overflow-y-auto custom-scrollbar" style={{ maxHeight: 'calc(80vh - 140px)' }}>
+                            <div className="grid grid-cols-2 gap-4">
+                                <div>
+                                    <label className="text-xs text-muted font-medium">Model Name</label>
+                                    <p className="text-sm font-medium mt-1">{selectedModel.name}</p>
+                                </div>
+                                <div>
+                                    <label className="text-xs text-muted font-medium">Accuracy</label>
+                                    <p className="text-sm font-medium mt-1">
+                                        {selectedModel.accuracy ? `${(selectedModel.accuracy * 100).toFixed(2)}%` : 'N/A'}
+                                    </p>
+                                </div>
+                                <div>
+                                    <label className="text-xs text-muted font-medium">File Size</label>
+                                    <p className="text-sm font-medium mt-1">{formatBytes(selectedModel.sizeBytes)}</p>
+                                </div>
+                                <div>
+                                    <label className="text-xs text-muted font-medium">Created Date</label>
+                                    <p className="text-sm font-medium mt-1">{new Date(selectedModel.date).toLocaleString()}</p>
+                                </div>
+                                <div>
+                                    <label className="text-xs text-muted font-medium">Model ID</label>
+                                    <p className="text-xs text-muted mt-1 break-all font-mono">{selectedModel.sessionId || selectedModel.id}</p>
+                                </div>
+                                <div>
+                                    <label className="text-xs text-muted font-medium">Format</label>
+                                    <p className="text-sm font-medium mt-1">PyTorch (.pth)</p>
+                                </div>
+                            </div>
+
+                            {selectedModel.metrics && (
+                                <div className="mt-6 pt-6 border-t">
+                                    <h4 className="font-semibold text-sm mb-3">Training Metrics</h4>
+                                    <div className="grid grid-cols-2 gap-3">
+                                        <div className="p-3 bg-gray-50 rounded">
+                                            <label className="text-xs text-muted">Train Accuracy</label>
+                                            <p className="text-lg font-semibold text-blue-600">{(selectedModel.metrics.trainAcc * 100).toFixed(2)}%</p>
+                                        </div>
+                                        <div className="p-3 bg-gray-50 rounded">
+                                            <label className="text-xs text-muted">Val Accuracy</label>
+                                            <p className="text-lg font-semibold text-green-600">{(selectedModel.metrics.valAcc * 100).toFixed(2)}%</p>
+                                        </div>
+                                        <div className="p-3 bg-gray-50 rounded">
+                                            <label className="text-xs text-muted">Train Loss</label>
+                                            <p className="text-lg font-semibold text-orange-600">{selectedModel.metrics.trainLoss.toFixed(4)}</p>
+                                        </div>
+                                        <div className="p-3 bg-gray-50 rounded">
+                                            <label className="text-xs text-muted">Val Loss</label>
+                                            <p className="text-lg font-semibold text-red-600">{selectedModel.metrics.valLoss.toFixed(4)}</p>
+                                        </div>
+                                    </div>
+                                </div>
+                            )}
+                        </div>
+                        <div className="p-4 border-t bg-gray-50 flex justify-end gap-2">
+                            <button onClick={() => setSelectedModel(null)} className="btn btn-secondary py-2 text-sm">
+                                Close
+                            </button>
+                            <button
+                                onClick={() => {
+                                    handleToggleSelect(selectedModel.id)
+                                    setSelectedModel(null)
+                                }}
+                                className="btn btn-primary py-2 text-sm"
+                            >
+                                {selectedModels.includes(selectedModel.id) ? 'Deselect' : 'Select for Export'}
+                            </button>
+                        </div>
+                    </div>
                 </div>
-                <div className="bg-gradient-to-r from-green-50 to-emerald-50 p-4 rounded-xl border border-green-200">
-                  <div className="flex justify-between items-center">
-                    <span className="text-sm font-medium text-gray-700">Train Accuracy</span>
-                    <span className="text-xl font-bold text-green-600">{currentMetadata.trainAcc ? `${(currentMetadata.trainAcc * 100).toFixed(2)}%` : 'N/A'}</span>
-                  </div>
-                </div>
-                <div className="mt-4 p-3 bg-gray-50 rounded-lg border border-gray-200">
-                  <p className="text-xs text-gray-500 mb-1">Model File</p>
-                  <p className="text-sm font-semibold text-gray-700 break-all">{formatModelName(selectedModel.name)}</p>
-                  <p className="text-xs text-gray-500 mt-2">Size: {formatFileSize(selectedModel.size)}</p>
-                </div>
-              </div>
-            ) : (
-              <div className="p-8 text-center">
-                <div className="text-6xl mb-3">📋</div>
-                <p className="text-gray-500 font-medium">Select a model to view summary</p>
-              </div>
             )}
-          </div>
         </div>
-      </div>
-    </div>
-  )
+    )
 }

@@ -9,6 +9,8 @@ from torchvision import datasets, transforms
 from pathlib import Path
 import time
 from datetime import datetime
+import pandas as pd
+import numpy as np
 
 class YOLODataset(Dataset):
     """Dataset loader for YOLO format (images + labels folders)"""
@@ -391,6 +393,63 @@ class CustomImageDataset(Dataset):
         
         return image, label
 
+class CSVDataset(Dataset):
+    """Dataset loader for CSV format (tabular data)"""
+    def __init__(self, csv_path, transform=None):
+        self.df = pd.read_csv(csv_path)
+        
+        # Separate features and target
+        # Use .copy() to avoid SettingWithCopyWarning
+        X_df = self.df.iloc[:, :-1].copy()
+        y_series = self.df.iloc[:, -1].copy()
+        
+        # Preprocess features: Handle categorical columns
+        for col in X_df.columns:
+            # Check if column is object (string) or category
+            if X_df[col].dtype == 'object' or X_df[col].dtype.name == 'category':
+                # Convert to categorical codes
+                X_df[col] = X_df[col].astype('category').cat.codes
+        
+        # Handle missing values (fill with 0)
+        X_df = X_df.fillna(0)
+        
+        self.X = X_df.values.astype('float32')
+        self.y = y_series.values
+        
+        # Encode labels if they are strings
+        if self.y.dtype == 'object' or self.y.dtype.type is np.str_ or self.y.dtype.type is np.object_:
+            self.classes = sorted(list(set(self.y)))
+            self.class_to_idx = {cls: i for i, cls in enumerate(self.classes)}
+            self.y = np.array([self.class_to_idx[lbl] for lbl in self.y], dtype=np.int64)
+        else:
+            # Assume they are already integers 0..N-1 or similar
+            self.classes = [str(i) for i in sorted(list(set(self.y)))]
+            self.y = self.y.astype(np.int64)
+            
+        self.transform = transform
+
+    def __len__(self):
+        return len(self.df)
+
+    def __getitem__(self, idx):
+        return torch.tensor(self.X[idx]), torch.tensor(self.y[idx])
+
+class SimpleMLP(nn.Module):
+    def __init__(self, input_dim, num_classes):
+        super(SimpleMLP, self).__init__()
+        self.layers = nn.Sequential(
+            nn.Linear(input_dim, 128),
+            nn.ReLU(),
+            nn.Dropout(0.2),
+            nn.Linear(128, 64),
+            nn.ReLU(),
+            nn.Dropout(0.2),
+            nn.Linear(64, num_classes)
+        )
+    
+    def forward(self, x):
+        return self.layers(x)
+
 class SimpleCNN(nn.Module):
     def __init__(self, num_classes):
         super(SimpleCNN, self).__init__()
@@ -439,6 +498,17 @@ def train_model(dataset_path, config):
     learning_rate = config.get('learningRate', 0.001)
     dataset_type = config.get('datasetType', 'auto')  # Get dataset type from config
     
+    # Auto-configure validation split and early stopping if set to 0 (prevent overfitting)
+    validation_split = config.get('validationSplit', 0)
+    if validation_split == 0:
+        validation_split = 0.2  # Automatic 20% validation split
+        send_progress({'type': 'init', 'message': 'Using automatic 20% validation split to prevent overfitting'})
+    
+    early_stop_patience = config.get('patience', 0)
+    if early_stop_patience == 0:
+        early_stop_patience = 20  # Automatic patience of 20 epochs
+        send_progress({'type': 'init', 'message': 'Using automatic early stopping (patience: 20 epochs) to prevent overfitting'})
+    
     # Data augmentation for training (prevent overfitting)
     train_transform = transforms.Compose([
         transforms.Resize((32, 32), antialias=True),
@@ -460,6 +530,7 @@ def train_model(dataset_path, config):
     train_dataset = None
     val_dataset = None
     num_classes = 0
+    input_dim = 0
     dataset_root = Path(dataset_path)
     
     # Load based on dataset type from config (optimized for speed)
@@ -499,6 +570,26 @@ def train_model(dataset_path, config):
         total_samples = len(train_dataset_full)
         send_progress({'type': 'init', 'message': f'Found {total_samples} images across {num_classes} classes'})
     
+    elif dataset_type == 'csv':
+        # Find CSV file
+        csv_files = list(dataset_root.glob('*.csv'))
+        if not csv_files:
+             send_progress({'type': 'error', 'message': 'No CSV file found!'})
+             sys.exit(1)
+        
+        csv_path = csv_files[0]
+        train_dataset_full = CSVDataset(csv_path)
+        num_classes = len(train_dataset_full.classes)
+        classes = train_dataset_full.classes
+        input_dim = train_dataset_full.X.shape[1]
+        total_samples = len(train_dataset_full)
+        
+        # Disable image transforms for CSV data
+        train_transform = None
+        val_transform = None
+        
+        send_progress({'type': 'init', 'message': f'Loaded CSV dataset with {total_samples} samples, {input_dim} features, {num_classes} classes'})
+    
     else:
         # Auto-detect (fallback only)
         if (dataset_root / 'train').exists():
@@ -523,9 +614,9 @@ def train_model(dataset_path, config):
         send_progress({'type': 'error', 'message': 'No images found in dataset!'})
         sys.exit(1)
     
-    # Split dataset into train and validation (80/20 split)
-    send_progress({'type': 'init', 'message': 'Splitting dataset into train/validation sets...'})
-    train_size = int(0.8 * total_samples)
+    # Split dataset into train and validation using configured split ratio
+    send_progress({'type': 'init', 'message': f'Splitting dataset ({int((1-validation_split)*100)}% train / {int(validation_split*100)}% validation)...'})
+    train_size = int((1 - validation_split) * total_samples)
     val_size = total_samples - train_size
     
     # Create random split indices
@@ -593,17 +684,19 @@ def train_model(dataset_path, config):
         device = torch.device('cpu')
         send_progress({'type': 'device', 'device': 'CPU (No GPU detected)'})
     
-    model = SimpleCNN(num_classes).to(device)
+    if dataset_type == 'csv':
+        model = SimpleMLP(input_dim, num_classes).to(device)
+    else:
+        model = SimpleCNN(num_classes).to(device)
     criterion = nn.CrossEntropyLoss()
     # Add weight decay (L2 regularization) to prevent overfitting
     optimizer = optim.Adam(model.parameters(), lr=learning_rate, weight_decay=1e-4)
     # Learning rate scheduler to reduce LR when validation loss plateaus (prevents overfitting)
-    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=10, verbose=False)
+    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=10)
     
-    # Early stopping to prevent overfitting
+    # Early stopping to prevent overfitting (patience configured above)
     best_val_loss = float('inf')
     patience_counter = 0
-    early_stop_patience = 20  # Stop if no improvement for 20 epochs
     
     # Training loop
     send_progress({'type': 'init', 'message': f'Starting training for {epochs} epochs...'})
@@ -714,11 +807,12 @@ def train_model(dataset_path, config):
             'elapsed': elapsed
         })
     
+    
     # Save model with datetime in filename in trainedModel folder
-    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-    model_filename = f'TrainedModel_{timestamp}.pth'
-    # Ensure model is saved in trainedModel folder (outside uploads)
-    models_dir = os.path.join(os.path.dirname(__file__), 'trainedModel')
+    timestamp = datetime.now().strftime('%Y-%m-%d-%H-%M-%S')
+    model_filename = f'TrainedModel-{timestamp}.pth'
+    # Ensure model is saved in server/trainedModel folder (not in python subfolder)
+    models_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'trainedModel')
     os.makedirs(models_dir, exist_ok=True)
     model_path = os.path.join(models_dir, model_filename)
     
@@ -727,7 +821,11 @@ def train_model(dataset_path, config):
         'model_state_dict': model.state_dict(),
         'num_classes': num_classes,
         'classes': classes,
-        'timestamp': timestamp
+        'timestamp': timestamp,
+        'train_acc': float(train_acc),
+        'val_acc': float(val_acc),
+        'train_loss': float(train_loss),
+        'val_loss': float(val_loss)
     }, model_path)
     
     # Clear GPU memory if using CUDA

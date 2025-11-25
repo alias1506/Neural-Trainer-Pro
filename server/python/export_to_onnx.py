@@ -7,35 +7,40 @@ import traceback
 
 
 class SimpleCNN(nn.Module):
-    def __init__(self, num_classes=10, use_batchnorm=True, hidden_size=256):
+    def __init__(self, num_classes):
         super(SimpleCNN, self).__init__()
-        self.use_batchnorm = use_batchnorm
+        self.features = nn.Sequential(
+            nn.Conv2d(3, 32, 3, padding=1),
+            nn.BatchNorm2d(32),
+            nn.ReLU(),
+            nn.MaxPool2d(2),
+            nn.Dropout2d(0.1),
+            
+            nn.Conv2d(32, 64, 3, padding=1),
+            nn.BatchNorm2d(64),
+            nn.ReLU(),
+            nn.MaxPool2d(2),
+            nn.Dropout2d(0.2),
+            
+            nn.Conv2d(64, 128, 3, padding=1),
+            nn.BatchNorm2d(128),
+            nn.ReLU(),
+            nn.MaxPool2d(2),
+            nn.Dropout2d(0.3),
+        )
         
-        if use_batchnorm:
-            self.features = nn.Sequential(
-                nn.Conv2d(3, 32, 3, padding=1), nn.BatchNorm2d(32), nn.ReLU(), nn.MaxPool2d(2), nn.Dropout2d(0.1),
-                nn.Conv2d(32, 64, 3, padding=1), nn.BatchNorm2d(64), nn.ReLU(), nn.MaxPool2d(2), nn.Dropout2d(0.2),
-                nn.Conv2d(64, 128, 3, padding=1), nn.BatchNorm2d(128), nn.ReLU(), nn.MaxPool2d(2), nn.Dropout2d(0.3)
-            )
-            self.classifier = nn.Sequential(
-                nn.Linear(128*4*4, hidden_size), nn.BatchNorm1d(hidden_size), nn.ReLU(), nn.Dropout(0.5),
-                nn.Linear(hidden_size, num_classes)
-            )
-        else:
-            self.features = nn.Sequential(
-                nn.Conv2d(3, 32, 3, padding=1), nn.ReLU(), nn.MaxPool2d(2),
-                nn.Conv2d(32, 64, 3, padding=1), nn.ReLU(), nn.MaxPool2d(2),
-                nn.Conv2d(64, 128, 3, padding=1), nn.ReLU(), nn.MaxPool2d(2)
-            )
-            self.classifier = nn.Sequential(
-                nn.Identity(), nn.Linear(128*4*4, hidden_size), nn.ReLU(), nn.Dropout(0.5),
-                nn.Linear(hidden_size, num_classes)
-            )
+        self.classifier = nn.Sequential(
+            nn.Flatten(),
+            nn.Linear(128 * 4 * 4, 256),
+            nn.BatchNorm1d(256),
+            nn.ReLU(),
+            nn.Dropout(0.5),
+            nn.Linear(256, num_classes)
+        )
     
     def forward(self, x):
         x = self.features(x)
-        x = x.view(x.size(0), -1)
-        x = self.classifier[1:](x) if not self.use_batchnorm else self.classifier(x)
+        x = self.classifier(x)
         return x
 
 
@@ -43,6 +48,13 @@ def load_pytorch_model(model_path, num_classes=10):
     try:
         checkpoint = torch.load(model_path, map_location='cpu', weights_only=False)
         
+        # Try to extract the model directly if it was saved as a full model
+        if isinstance(checkpoint, nn.Module):
+            model = checkpoint
+            model.eval()
+            return model
+        
+        # If it's a dict, get state_dict and num_classes
         if isinstance(checkpoint, dict):
             state_dict = checkpoint.get('model_state_dict') or checkpoint.get('state_dict') or checkpoint
             if 'num_classes' in checkpoint:
@@ -50,19 +62,25 @@ def load_pytorch_model(model_path, num_classes=10):
         else:
             state_dict = checkpoint
         
-        has_bn = any('running_mean' in k for k in state_dict.keys())
-        hidden = state_dict['classifier.1.weight'].shape[0] if 'classifier.1.weight' in state_dict else 256
-        
-        model = SimpleCNN(num_classes, has_bn, hidden)
+        # Create model with correct architecture
+        model = SimpleCNN(num_classes)
         model.load_state_dict(state_dict)
         model.eval()
         return model
+        
     except Exception as e:
         raise Exception(f"Failed to load PyTorch model: {str(e)}")
 
 
 if __name__ == '__main__':
     try:
+        # Set UTF-8 encoding for stdout/stderr to handle Unicode characters
+        import sys
+        if sys.platform == 'win32':
+            import io
+            sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
+            sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace')
+        
         if len(sys.argv) < 3:
             print(json.dumps({'success': False, 'error': 'Usage: python export_to_onnx.py <model.pth> <output.onnx> [num_classes]'}))
             sys.exit(1)
@@ -75,16 +93,18 @@ if __name__ == '__main__':
         model.eval()
         dummy_input = torch.randn(1, 3, 32, 32)
         
+        # Use legacy ONNX exporter to avoid Unicode issues
         torch.onnx.export(
             model,
             dummy_input,
             output_path,
             export_params=True,
-            opset_version=11,
+            opset_version=17,  # Use higher opset version
             do_constant_folding=True,
             input_names=['input'],
             output_names=['output'],
-            dynamic_axes={'input': {0: 'batch_size'}, 'output': {0: 'batch_size'}}
+            dynamic_axes={'input': {0: 'batch_size'}, 'output': {0: 'batch_size'}},
+            verbose=False  # Disable verbose output to avoid Unicode issues
         )
         
         print(json.dumps({'success': True, 'output_path': output_path}))

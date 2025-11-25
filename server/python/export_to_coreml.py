@@ -1,114 +1,116 @@
-"""
-Standalone CoreML Converter
-Converts PyTorch models to CoreML format via ONNX
-Usage: python export_to_coreml.py <model.pth> <output.mlmodel> [num_classes]
-
-Note: On Windows, creates ONNX file + instructions for macOS conversion
-"""
-
+import sys
+import json
 import torch
 import torch.nn as nn
-import sys
-import os
+import traceback
 
 
 class SimpleCNN(nn.Module):
-    def __init__(self, num_classes=10, use_batchnorm=True, hidden_size=256):
+    def __init__(self, num_classes):
         super(SimpleCNN, self).__init__()
-        self.use_batchnorm = use_batchnorm
+        self.features = nn.Sequential(
+            nn.Conv2d(3, 32, 3, padding=1),
+            nn.BatchNorm2d(32),
+            nn.ReLU(),
+            nn.MaxPool2d(2),
+            nn.Dropout2d(0.1),
+            
+            nn.Conv2d(32, 64, 3, padding=1),
+            nn.BatchNorm2d(64),
+            nn.ReLU(),
+            nn.MaxPool2d(2),
+            nn.Dropout2d(0.2),
+            
+            nn.Conv2d(64, 128, 3, padding=1),
+            nn.BatchNorm2d(128),
+            nn.ReLU(),
+            nn.MaxPool2d(2),
+            nn.Dropout2d(0.3),
+        )
         
-        if use_batchnorm:
-            self.features = nn.Sequential(
-                nn.Conv2d(3, 32, 3, padding=1), nn.BatchNorm2d(32), nn.ReLU(), nn.MaxPool2d(2), nn.Dropout2d(0.1),
-                nn.Conv2d(32, 64, 3, padding=1), nn.BatchNorm2d(64), nn.ReLU(), nn.MaxPool2d(2), nn.Dropout2d(0.2),
-                nn.Conv2d(64, 128, 3, padding=1), nn.BatchNorm2d(128), nn.ReLU(), nn.MaxPool2d(2), nn.Dropout2d(0.3)
-            )
-            self.classifier = nn.Sequential(
-                nn.Linear(128*4*4, hidden_size), nn.BatchNorm1d(hidden_size), nn.ReLU(), nn.Dropout(0.5),
-                nn.Linear(hidden_size, num_classes)
-            )
-        else:
-            self.features = nn.Sequential(
-                nn.Conv2d(3, 32, 3, padding=1), nn.ReLU(), nn.MaxPool2d(2),
-                nn.Conv2d(32, 64, 3, padding=1), nn.ReLU(), nn.MaxPool2d(2),
-                nn.Conv2d(64, 128, 3, padding=1), nn.ReLU(), nn.MaxPool2d(2)
-            )
-            self.classifier = nn.Sequential(
-                nn.Identity(), nn.Linear(128*4*4, hidden_size), nn.ReLU(), nn.Dropout(0.5),
-                nn.Linear(hidden_size, num_classes)
-            )
+        self.classifier = nn.Sequential(
+            nn.Flatten(),
+            nn.Linear(128 * 4 * 4, 256),
+            nn.BatchNorm1d(256),
+            nn.ReLU(),
+            nn.Dropout(0.5),
+            nn.Linear(256, num_classes)
+        )
     
     def forward(self, x):
         x = self.features(x)
-        x = x.view(x.size(0), -1)
-        x = self.classifier[1:](x) if not self.use_batchnorm else self.classifier(x)
+        x = self.classifier(x)
         return x
 
 
-def load_model(path, num_classes=10):
-    checkpoint = torch.load(path, map_location='cpu', weights_only=False)
-    
-    if isinstance(checkpoint, dict):
-        state_dict = checkpoint.get('model_state_dict') or checkpoint.get('state_dict') or checkpoint
-        if 'num_classes' in checkpoint:
-            num_classes = checkpoint['num_classes']
-    else:
-        state_dict = checkpoint
-    
-    has_bn = any('running_mean' in k for k in state_dict.keys())
-    hidden = state_dict['classifier.1.weight'].shape[0] if 'classifier.1.weight' in state_dict else 256
-    
-    model = SimpleCNN(num_classes, has_bn, hidden)
-    model.load_state_dict(state_dict)
-    model.eval()
-    return model, num_classes
+def load_pytorch_model(model_path, num_classes=10):
+    try:
+        checkpoint = torch.load(model_path, map_location='cpu', weights_only=False)
+        
+        if isinstance(checkpoint, nn.Module):
+            model = checkpoint
+            model.eval()
+            return model
+        
+        if isinstance(checkpoint, dict):
+            state_dict = checkpoint.get('model_state_dict') or checkpoint.get('state_dict') or checkpoint
+            if 'num_classes' in checkpoint:
+                num_classes = checkpoint['num_classes']
+        else:
+            state_dict = checkpoint
+        
+        model = SimpleCNN(num_classes)
+        model.load_state_dict(state_dict)
+        model.eval()
+        return model
+        
+    except Exception as e:
+        raise Exception(f"Failed to load PyTorch model: {str(e)}")
 
 
 if __name__ == '__main__':
-    import json
-    import traceback
-    
     try:
+        # Set UTF-8 encoding for stdout/stderr to handle Unicode characters
+        import sys
+        if sys.platform == 'win32':
+            import io
+            sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
+            sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace')
+        
         if len(sys.argv) < 3:
             print(json.dumps({'success': False, 'error': 'Usage: python export_to_coreml.py <model.pth> <output.mlmodel> [num_classes]'}))
             sys.exit(1)
         
-        model, nc = load_model(sys.argv[1], int(sys.argv[3]) if len(sys.argv) > 3 else 10)
-        output = sys.argv[2]
+        model_path = sys.argv[1]
+        output_path = sys.argv[2]
+        num_classes = int(sys.argv[3]) if len(sys.argv) > 3 else 10
         
-        # Try CoreML conversion
         try:
             import coremltools as ct
-            
-            # CoreML Tools v7+ doesn't support ONNX source directly
-            # We need to convert via PyTorch TorchScript instead
-            dummy_input = torch.randn(1, 3, 32, 32)
-            traced_model = torch.jit.trace(model, dummy_input)
-            
-            # Convert TorchScript to CoreML
-            mlmodel = ct.convert(
-                traced_model,
-                inputs=[ct.TensorType(name="input", shape=(1, 3, 32, 32))],
-                minimum_deployment_target=ct.target.iOS15
-            )
-            mlmodel.save(output)
-            
-            print(json.dumps({'success': True, 'output_path': output}))
-            
-        except (ImportError, RuntimeError) as e:
-            # CoreML Tools doesn't work properly on Windows (BlobWriter error)
-            error_msg = str(e)
-            is_windows_error = 'BlobWriter' in error_msg or isinstance(e, RuntimeError)
-            
-            if is_windows_error:
-                print(json.dumps({
-                    'success': False,
-                    'error': 'CoreML conversion is not supported on Windows (BlobWriter error).',
-                    'hint': 'Please use ONNX format instead, which works on all platforms and can be converted to CoreML on macOS if needed.'
-                }))
-            else:
-                print(json.dumps({'success': False, 'error': f'coremltools import error: {error_msg}'}))
+        except ImportError:
+            print(json.dumps({'success': False, 'error': 'CoreML conversion requires: pip install coremltools'}))
+            sys.exit(1)
         
+        model = load_pytorch_model(model_path, num_classes)
+        model.eval()
+        
+        # Create example input
+        example_input = torch.randn(1, 3, 32, 32)
+        
+        # Trace the model
+        traced_model = torch.jit.trace(model, example_input)
+        
+        # Convert to CoreML
+        mlmodel = ct.convert(
+            traced_model,
+            inputs=[ct.ImageType(name="input", shape=example_input.shape)],
+            convert_to="mlprogram"  # Use ML Program format (newer)
+        )
+        
+        # Save the model
+        mlmodel.save(output_path)
+        
+        print(json.dumps({'success': True, 'output_path': output_path}))
     except Exception as e:
         print(json.dumps({'success': False, 'error': str(e), 'traceback': traceback.format_exc()}))
         sys.exit(1)
